@@ -1,0 +1,11 @@
+- In `analyze_dc_spect_mc_root_data.ipynb`, `RunID` is always 0 in each ROOT file, so batch uniqueness must use a file-derived key (`FileRunID`) plus `EventID`.
+- `EventKey = (FileRunID, EventID)` is the correct event grouping key; `TrackKey = (FileRunID, EventID, TrackID)` is the correct track-level key.
+- `TotalEnergyDeposit` exists in the hit tree and matches `(PreKineticEnergy - PostKineticEnergy) * 1e3` to floating-point precision (~1.42e-14 keV max difference), so the per-hit energy bookkeeping is consistent.
+- There are secondary-like hits in the hit table: `ParticleType=lepton` with creator processes `compt`, `phot`, and rare `eIoni`/`eBrem` entries, but they contribute only ~0.003182% of total deposited energy in this batch.
+- For gamma hits, `ProcessDefinedStep` is mostly `phot` and `compt`; no measurable mismatch was found between kinetic-energy loss and `TotalEnergyDeposit` above numerical round-off.
+- `eIoni` refers to electron ionization secondaries (delta-electron-type activity), not the primary gamma interaction itself.
+- `compt` alone does not tell whether the interaction occurred inside the crystal or in tungsten; volume/local-coordinate filtering is needed to separate crystal vs collimator interactions.
+- Geometry validation from `create_sim_geom_dc_spect.py` shows detector crystal local axes and AABB bounds can be reconstructed from the spreadsheet geometry, and `PostPositionLocal_*` is consistent with the inverse transform of global positions.
+- Local-coordinate ranges: `PrePositionLocal_*` are clipped to the crystal box limits exactly (~[-25,25] mm in X/Y and [-5,5] mm in Z), while `PostPositionLocal_*` show rare outliers beyond the box, consistent with step endpoints leaving the crystal.
+- For scintillation modeling, the right quantity is local deposited energy in the crystal (`TotalEnergyDeposit` or equivalent), then convert to light yield; full optical-photon simulation is optional but much slower.
+- Secondary-like deposited energy is dominated by Compton-created lepton tracks; if needed, filter crystal hits by local coordinates/volume first, then sum deposited energy for scintillation/light-yield estimation.

@@ -1,0 +1,61 @@
+{
+  "default_enabled": false,
+  "exclude_patterns": ["world:*"],
+  "default_style": {
+    "color": "#999999",
+    "opacity": 0.15,
+    "edge_color": "#333333"
+  },
+  "rules": [
+    {
+      "pattern": "world:*",
+      "enabled": true,
+      "style": {
+        "color": "#b0b0b0",
+        "opacity": 0.08,
+        "edge_color": "#666666",
+        "legend_name": "World"
+      }
+    },
+    {
+      "pattern": "crystal_rep_*:*",
+      "enabled": true,
+      "style": {
+        "color": "blue",
+        "opacity": 0.7,
+        "edge_color": "black",
+        "legend_name": "Crystal"
+      }
+    },
+    {
+      "pattern": "crystal_barrier_rep_*:*",
+      "enabled": true,
+      "style": {
+        "color": "cyan",
+        "opacity": 1.0,
+        "edge_color": "black",
+        "legend_name": "Crystal"
+      }
+    },
+    {
+      "pattern": "optical_epoxy_rep_*:*",
+      "enabled": true,
+      "style": {
+        "color": "pink",
+        "opacity": 0.7,
+        "edge_color": "red",
+        "legend_name": "Optical Epoxy"
+      }
+    },
+    {
+      "pattern": "sipm_rep_*:*",
+      "enabled": true,
+      "style": {
+        "color": "green",
+        "opacity": 0.7,
+        "edge_color": "darkgreen",
+        "legend_name": "sipm"
+      }
+    }
+  ]
+}

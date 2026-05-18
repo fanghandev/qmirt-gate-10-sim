@@ -1,0 +1,31 @@
+=== Payload execution started ===
+
+report_file=./output/local/slurm_identifier_report_job_nojob_task_0.txt
+output_dir=./output/local
+
+=== Slurm identifier test ===
+[batch-shell]
+SLURM_JOB_ID=unset
+SLURM_JOB_NAME=unset
+SLURM_JOB_NODELIST=unset
+SLURM_NTASKS=unset
+SLURM_PROCID=unset
+SLURM_LOCALID=unset
+SLURM_ARRAY_JOB_ID=unset
+SLURM_ARRAY_TASK_ID=unset
+SLURM_ARRAY_TASK_COUNT=unset
+SLURM_ARRAY_TASK_MIN=unset
+SLURM_ARRAY_TASK_MAX=unset
+SLURM_STEP_ID=unset
+SLURM_STEP_NUM_TASKS=unset
+SLURM_STEP_TASKS=unset
+effective_job_id=nojob
+effective_task_id=0
+effective_array_job_id=unset
+=== Single-task job ===
+Wrapper-launched srun still provides the single task context.
+
+=== Scenario hints ===
+non-array job: SLURM_JOB_ID is set, SLURM_ARRAY_JOB_ID/SLURM_ARRAY_TASK_ID are unset
+array element: SLURM_JOB_ID is set, SLURM_ARRAY_JOB_ID equals the array job id, SLURM_ARRAY_TASK_ID is the element index
+multi-task step: SLURM_PROCID is set inside srun-launched tasks
