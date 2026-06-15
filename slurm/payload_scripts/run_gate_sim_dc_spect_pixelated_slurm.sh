@@ -28,7 +28,7 @@ set -euo pipefail
 # Setup paths
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GATE_SIM_PREFIX="${GATE_SIM_PREFIX:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
-PYTHON_SCRIPT_REL="python/gate_sim_dc_spect_pixelated.py"
+PYTHON_SCRIPT_REL="python/gate_sim_dc_spect_pixelated_w_2mm_box.py"
 
 # Container configuration
 export CONTAINER_URI="${CONTAINER_URI:-docker://gitlab.partners.org:5050/rpil/qmirt/simulation/gate10mc:latest}"
