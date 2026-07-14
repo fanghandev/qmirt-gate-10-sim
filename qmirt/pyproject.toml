@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qmirt"
+version = "0.1.0"
+description = "Utilities for Gate10 geometry plotting and WRL handling"
+authors = [ { name = "Fang Han", email = "fhanonline@gmail.com" } ]
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "plotly",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
