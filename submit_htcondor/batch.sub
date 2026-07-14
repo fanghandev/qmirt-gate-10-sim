@@ -1,0 +1,20 @@
+executable = wrapper_batch.sh
+arguments = $(ClusterId) $(ProcId)
+
++SingularityImage = "osdf:///ospool/ap40/data/fang.han/qmirt-gate-10-sim.sif"
+transfer_input_files = ../payload, ../persistent_data, ../qmirt
+
+# Route the heavy data output to the /ospool storage directory
+transfer_output_files = results_$(ClusterId)_$(ProcId).tar.gz
+transfer_output_remaps = "results_$(ClusterId)_$(ProcId).tar.gz = $(out_dir)/results_$(ClusterId)_$(ProcId).tar.gz"
+
+# Route all HTCondor logs to the local /home logs directory
+log = $(log_dir)/job_$(ClusterId)_$(ProcId).log
+output = $(log_dir)/job_$(ClusterId)_$(ProcId).out
+error = $(log_dir)/job_$(ClusterId)_$(ProcId).err
+
+request_cpus = 1
+request_memory = 2GB
+request_disk = 5GB
+
+queue 10000
