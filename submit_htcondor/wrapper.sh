@@ -1,0 +1,1 @@
+tar -czvf workspace.tar.gz ../payload/ ../persistent_data/ ../qmirt/

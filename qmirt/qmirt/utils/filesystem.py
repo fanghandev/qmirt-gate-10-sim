@@ -23,6 +23,39 @@ def generate_tree(dir_path: Path, prefix: str = ""):
             extension = branch if pointer == tee else space
             yield from generate_tree(path, prefix=prefix + extension)
 
+def search_dir_up(dir_name: str, start_file: str | Path) -> Path:
+    """
+    Search for a directory name by traversing up the directory tree.
+    
+    Args:
+        dir_name: The name of the target directory to find.
+        start_file: The path of the file to start searching from (typically __file__).
+        
+    Returns:
+        Path: The absolute path of the found directory.
+        
+    Raises:
+        FileNotFoundError: If the directory is not found before reaching the root.
+    """
+    # Extract the parent directory from the provided file path
+    current_dir = Path(start_file).resolve().parent
+    
+    while True:
+        target = current_dir / dir_name
+        
+        # If the target exists and is a directory, return its path
+        if target.is_dir():
+            return target
+            
+        parent_dir = current_dir.parent
+        
+        # Stop if we have reached the root of the file system
+        if parent_dir == current_dir:
+            raise FileNotFoundError(f"Directory '{dir_name}' not found in any parent directories of '{start_file}'.")
+            
+        # Move up to the next parent directory
+        current_dir = parent_dir
+
 
 def find_project_root(start_path: str | Path = None, marker: str = ".git") -> Path:
     """

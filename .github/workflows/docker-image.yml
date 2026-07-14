@@ -7,13 +7,14 @@ on:
   push:
     branches:
       - main
+    # Trigger the workflow when a tag starting with "v" is pushed
     tags:
       - "v*"
   workflow_dispatch:
 
 permissions:
-  contents: read
-  packages: write
+  contents: write # Required to upload files to GitHub Releases
+  packages: write # Required to push images to GitHub Container Registry
 
 jobs:
   docker:
@@ -44,7 +45,7 @@ jobs:
             type=ref,event=tag
             type=sha
 
-      - name: Build and (optionally) push Docker image
+      - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -54,3 +55,28 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  sif-release:
+    needs: docker # Ensure the Docker image is built and pushed first
+    runs-on: ubuntu-latest
+    # Only run this job if the workflow was triggered by a tag starting with "v"
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+      - name: Set up Apptainer
+        uses: eWaterCycle/setup-apptainer@v2
+        with:
+          apptainer-version: 1.3.0 # Use a stable version
+
+      - name: Pull Docker image and build SIF
+        # Use github.ref_name to get the exact tag name (e.g., v1.0)
+        run: |
+          echo "Building SIF from docker://ghcr.io/${{ github.repository }}:${{ github.ref_name }}"
+          apptainer pull qmirt-gate-10-sim.sif docker://ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+
+      - name: Upload SIF to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: qmirt-gate-10-sim.sif
+          # Automatically generate release notes if the release does not exist
+          generate_release_notes: true

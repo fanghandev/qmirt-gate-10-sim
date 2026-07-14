@@ -5,10 +5,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONNOUSERSITE=1
 
-RUN if [ -f /etc/apt/sources.list ]; then \
-        sed -i 's|http://\(archive\|security\).ubuntu.com/ubuntu|mirror://mirrors.ubuntu.com/mirrors.txt|g' /etc/apt/sources.list; \
-    fi
-
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
@@ -29,7 +25,7 @@ RUN python3 -m pip install --break-system-packages --upgrade --ignore-installed 
 RUN python3 -m pip install --no-cache-dir \
         opengate[novis] \
         openpyxl \
-        polars \
+        polars==1.42.0 \
         uproot \
         plotly \
         nibabel \
