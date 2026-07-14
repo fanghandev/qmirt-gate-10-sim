@@ -4,13 +4,16 @@ import numpy as np
 import opengate as gate
 import polars as pl
 from opengate.geometry.volumes import subtract_volumes, unite_volumes
-from qmirt_utility.utils import find_project_root
 from scipy.spatial.transform import Rotation
+
+import qmirt
 
 
 def get_geometry_definitions():
-    project_root = find_project_root()
-    data_dir = project_root / "persistent_data" / "brain_spect"
+    data_dir = (
+        qmirt.utils.filesystem.search_dir_up("persistent_data", __file__)
+        / "brain_spect"
+    )
     csv_dir = data_dir / "csv"
     csv_filename = "BrainSPECT_Point_Cloud.007.25mmx0.556mm_pinhole.csv"
     stl_dir = data_dir / "stl"
@@ -536,7 +539,9 @@ def main():
             geometry_base_definition, geometry_transformation_dataframe
         )
     else:
-        persist_data_dir = find_project_root() / "persistent_data"
+        persist_data_dir = qmirt.utils.filesystem.search_dir_up(
+            "persistent_data", __file__
+        )
         run_simulation(
             persist_data_dir,
             geometry_base_definition,

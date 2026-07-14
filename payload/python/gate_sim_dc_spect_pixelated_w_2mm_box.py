@@ -9,6 +9,22 @@ import pandas as pd
 from opengate.geometry.volumes import subtract_volumes, unite_volumes
 from scipy.spatial.transform import Rotation
 
+import qmirt
+
+
+def add_point_source(
+    sim: gate.Simulation, energy_keV: float = 140.0, name: str = "PointSource", *, args
+):
+
+    source = gate.sources.generic.GenericSource(name=name)
+    source.particle = "gamma"
+    source.energy.type = "mono"
+    source.activity = args.source_activity_bq * gate.g4_units.Bq
+    source.energy.mono = energy_keV * gate.g4_units.keV
+    source.position.type = "point"
+    source.position.point = [0, 0, 0]  # unit is mm
+    sim.add_source(source, name=name)
+
 
 def generate_unique_seed(job_array_id: str, job_array_task_id: str) -> int:
     seed_string = f"gate_sim_{job_array_id}_{job_array_task_id}"
@@ -471,24 +487,6 @@ def load_wrl_as_mesh(wrl_path):
     return mesh
 
 
-def find_project_top_level_dir(project_dir: Path = Path(__file__).resolve()) -> Path:
-    """
-    Recursively search for the top-level directory of the project by looking for a specific marker file or directory.
-    use .git folder as the marker to identify the top-level directory of the project.
-    Args:
-        project_dir (Path): The starting directory for the search. Defaults to the directory of the current file.
-
-    Returns:
-        Path: The top-level directory of the project.
-    """
-    if (project_dir / ".git").exists():
-        return project_dir
-    elif project_dir.parent == project_dir:
-        raise FileNotFoundError("Top-level directory with .git not found.")
-    else:
-        return find_project_top_level_dir(project_dir.parent)
-
-
 def add_box_source(
     sim: gate.Simulation, energy_keV: float = 140.0, name: str = "BoxSource", *, args
 ):
@@ -547,6 +545,15 @@ def configure_chunked_run_timing(sim: gate.Simulation, args):
 
 
 def add_dc_spect_geometry(sim: gate.Simulation, config: dict):
+
+    # Add a box at the center, and attach the source to it
+    # The box is used to define the source position,
+    # but is not part of the simulation geometry
+    # The size of the box is 220 mm x 220 mm x 220 mm
+    source_box = sim.add_volume("Box", name="SourceBox")
+    source_box.size = [220, 220, 220]  # unit is mm
+    source_box.material = "Air"
+
     for i in range(80):
         # Add the i_th collimator
         add_collimator_to_gate_sim(sim, config, id=i)
@@ -635,16 +642,6 @@ def add_actors(sim: gate.Simulation, output_dir: Path, output_stem: str):
         pixel_readout_actor.output_filename = (
             output_dir / f"pixel_singles_{output_stem}.root"
         )
-
-
-def _resolve_persistent_data_dir() -> Path:
-    """
-    Resolves the persistent data directory path based on the project structure.
-    Returns:
-        Path: The path to the persistent data directory.
-    """
-    base_dir = find_project_top_level_dir()
-    return base_dir / "persistent_data"
 
 
 def _resolve_xlsx_path(persistent_data_dir: Path, xlsx_path: str | None) -> Path:
@@ -767,7 +764,9 @@ def parse_args(args=None):
 def main():
     args = parse_args()
 
-    persistent_data_dir = _resolve_persistent_data_dir()
+    persistent_data_dir = qmirt.utils.filesystem.search_dir_up(
+        "persistent_data", __file__
+    )
     resolved_job_array_id, resolved_job_array_task_id = _resolve_job_array_ids(
         args.job_array_id, args.job_array_task_id
     )

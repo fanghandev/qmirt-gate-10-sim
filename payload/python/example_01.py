@@ -1,4 +1,5 @@
-import opengate as gate
+from pathlib import Path
+
 import qmirt
 
 if __name__ == "__main__":
