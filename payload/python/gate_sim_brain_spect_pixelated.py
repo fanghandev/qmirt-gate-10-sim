@@ -9,6 +9,43 @@ from scipy.spatial.transform import Rotation
 import qmirt
 
 
+def get_geometry_base_definition(id: int = 0):
+    data_dir = (
+        qmirt.utils.filesystem.search_dir_up("persistent_data", __file__)
+        / "brain_spect"
+    )
+    stl_dir = data_dir / "stl"
+    stl_filename = "BrainFrame.008.Lead_Shield.STL"
+    w_pinhole_array = np.array([0.556, 0.797, 1.215, 2.007])
+    h_nozzle_array = np.array([5.04, 5.02, 5.00, 4.96])
+    l_top_array = np.array(
+        [
+            10.74,
+            11.00,
+            11.46,
+            12.33,
+        ]
+    )
+
+    collimator_definition = {
+        "l_top": l_top_array[id],
+        "h_nozzle": h_nozzle_array[id],
+        "w_pinhole": w_pinhole_array[id],
+        "w_wall": 2.03,
+        "l_bottom_inner": 50.0,
+        "l_bottom_outer": 56.064,
+        "h_body": 25.0,
+        "h_box": 23.5,
+    }
+    crystal_definition = {"size_mm": [50.0, 50.0, 10.0], "n_pixels": [25, 25, 1]}
+    geometry_base_definition = {
+        "collimator definition": collimator_definition,
+        "crystal definition": crystal_definition,
+        "shielding file path": str(stl_dir / stl_filename),
+    }
+    return geometry_base_definition
+
+
 def get_geometry_definitions():
     data_dir = (
         qmirt.utils.filesystem.search_dir_up("persistent_data", __file__)
@@ -16,21 +53,6 @@ def get_geometry_definitions():
     )
     csv_dir = data_dir / "csv"
     csv_filename = "BrainSPECT_Point_Cloud.007.25mmx0.556mm_pinhole.csv"
-    stl_dir = data_dir / "stl"
-    stl_filename = "BrainFrame.008.Lead_Shield.STL"
-
-    collimator_definition = {
-        "l_top": 10.74,
-        "h_nozzle": 5.04,
-        "w_pinhole": 0.556,
-        "w_wall": 2.03,
-        "l_bottom_inner": 50.0,
-        "l_bottom_outer": 56.064,
-        "h_body": 25.0,
-        "h_box": 23.5,
-    }
-
-    crystal_definition = {"size_mm": [50.0, 50.0, 10.0], "n_pixels": [25, 25, 1]}
 
     csv_pl_df = pl.read_csv(csv_dir / csv_filename)
     csv_pl_df = csv_pl_df.with_columns(
@@ -43,12 +65,11 @@ def get_geometry_definitions():
         csv_pl_df["Pinhole_z"],
         np.sqrt(csv_pl_df["Pinhole_x"] ** 2 + csv_pl_df["Pinhole_y"] ** 2),
     )
-    # elevation = (-elevation + 2 * np.pi) % (2 * np.pi)  # convert elevation angle to 0 to 2pi range
+
     # convert azimuthal angle to 0 to 2pi range
     azimuth = (
         np.arctan2(csv_pl_df["Pinhole_y"], csv_pl_df["Pinhole_x"]) + 2 * np.pi
     ) % (2 * np.pi)
-    # azimuth = np.arctan2(csv_pl_df['Pinhole_y'], csv_pl_df['Pinhole_x'])
     csv_pl_df = csv_pl_df.with_columns(
         pl.Series("elevation", elevation), pl.Series("azimuth", azimuth)
     )
@@ -56,8 +77,16 @@ def get_geometry_definitions():
     csv_pl_df = csv_pl_df.with_columns(
         pl.col("elevation").round(6), pl.col("azimuth").round(6)
     )
-
-    csv_pl_df = csv_pl_df.sort(["elevation", "azimuth"])
+    azimuth_minus_half_pi = np.array(csv_pl_df["azimuth"]) - 0.5 * np.pi
+    azimuth_minus_half_pi = np.where(
+        azimuth_minus_half_pi < 0,
+        azimuth_minus_half_pi + 2 * np.pi,
+        azimuth_minus_half_pi,
+    )
+    csv_pl_df = csv_pl_df.with_columns(
+        pl.Series("azimuth_minus_half_pi", azimuth_minus_half_pi)
+    )
+    csv_pl_df = csv_pl_df.sort(["elevation", "azimuth_minus_half_pi"])
 
     crystal_center_r = 179.61
     corrected_crystal_x = (
@@ -72,13 +101,8 @@ def get_geometry_definitions():
         pl.Series("Crystal_y", corrected_crystal_y),
         pl.Series("Crystal_z", corrected_crystal_z),
     )
-    crystal_definition["n crystals"] = geometry_transformation_dataframe.shape[0]
-    geometry_base_definition = {
-        "collimator definition": collimator_definition,
-        "crystal definition": crystal_definition,
-        "shielding file path": str(stl_dir / stl_filename),
-    }
-    return geometry_base_definition, geometry_transformation_dataframe
+
+    return geometry_transformation_dataframe
 
 
 def construct_collimator_geometry(config: dict, id: int):
@@ -234,14 +258,14 @@ def add_collimator_to_gate_sim(
     ]
 
     collimator.name = f"Collimator_{id + 1}"
-    # collimator.material = "Tungsten"
+    collimator.material = "Tungsten"
 
 
 def add_crystal_box(sim: gate.Simulation, name: str):
     mm = gate.g4_units.mm
     crystal_box = sim.add_volume("Box", name=name)
     crystal_box.size = [50.5 * mm, 50.5 * mm, 12.0 * mm]  # unit is mm
-    # crystal_box.material = "Air"
+    crystal_box.material = "Air"
     return crystal_box
 
 
@@ -270,8 +294,8 @@ def add_pixelated_detector_to_gate_sim(
     )
     pixel_repeater.linear_repeat = n_pixels
     pixel_repeater.translation = pixel_size_mm
-    # pixel_repeater.rotation = r
     sim.volume_manager.add_volume(pixel_repeater)
+    detector_pixel.material = "CsI"
 
 
 def add_shielding_to_gate_sim(sim: gate.Simulation, config: dict):
@@ -295,29 +319,68 @@ def add_shielding_to_gate_sim(sim: gate.Simulation, config: dict):
     shielding.material = "Lead"
 
 
-def add_geometry_to_gate_sim(sim: gate.Simulation, config: dict, pl_df: pl.DataFrame):
-    for id in range(config["crystal definition"]["n crystals"]):
+def map_crystal_id(id: int, n_crystals: int, mode: str) -> int:
+    """
+    Maps the crystal ID to a new ID based on the number of crystals.
+    This function can be customized to implement any specific mapping logic mode.
+    The goal is to map the crystal ID to 0,1,2,3, because we selected 4 collimator
+    geometry parameter sets.
+
+    Args:
+        id: The original crystal ID.
+        n_crystals: The total number of crystals.
+        mode: The mapping mode to use. Can be 'sequential', 'reverse', 'random'
+
+    Returns:
+        int: The new mapped crystal ID.
+    """
+    mapped_id = 0
+    match mode:
+        case "sequential":
+            mapped_id = id % 4
+        case "reverse":
+            mapped_id = (n_crystals - 1 - id) % 4
+        case "random":
+            mapped_id = np.random.randint(0, 4)
+    return mapped_id
+
+
+def add_geometry_to_gate_sim(sim: gate.Simulation, pl_df: pl.DataFrame, args):
+    n_crystals = pl_df.shape[0]
+    for id in range(n_crystals):
+        mapped_id = map_crystal_id(id, n_crystals, args.mapping_mode)
+        config = get_geometry_base_definition(mapped_id)
+        if args.geometry_only:
+            config["crystal definition"]["n_pixels"] = [1, 1, 1]
         add_collimator_to_gate_sim(sim, config, pl_df, id)
         add_pixelated_detector_to_gate_sim(sim, config, pl_df, id)
-    add_shielding_to_gate_sim(sim, config)
+    add_fov_box_to_gate_sim(sim)
+    # add_shielding_to_gate_sim(sim, config)
 
 
-def run_simulation_with_geometry_only(
-    geometry_base_definition, geometry_transformation_dataframe
-):
+def run_simulation_with_geometry_only(args):
+
+    output_dir = Path(args.output_dir).resolve()
+    print("Output directory: ", output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     sim = gate.Simulation()
-    add_geometry_to_gate_sim(
-        sim, geometry_base_definition, geometry_transformation_dataframe
-    )
+    persist_data_dir = qmirt.utils.filesystem.search_dir_up("persistent_data", __file__)
+    sim.volume_manager.add_material_database(persist_data_dir / "GateMaterials.db")
+    geometry_transformation_dataframe = get_geometry_definitions()
+
+    # Add Geometry to the simulation
+    add_geometry_to_gate_sim(sim, geometry_transformation_dataframe, args)
+
     sim.user_info.visu = True
     sim.user_info.visu_type = "vrml_file_only"
     sim.visu_commands_vrml = ["/vis/open VRML2FILE", "/vis/drawVolume"]
     sim.visu_commands_vrml.append("/vis/geometry/set/visibility world 0 false")
     sim.visu_commands_vrml.append("/vis/viewer/flush")
     print("Storing geometry into wrl file only without running the simulation...")
-    sim.user_info.visu_filename = "brain_spect_geometry.wrl"
+    sim.user_info.visu_filename = str(output_dir / "brain_spect_geometry.wrl")
     sim.run(start_new_process=True)
-    print(f"Geometry stored in {sim.user_info.visu_filename}")
+    print(f"Geometry stored in:\n  {sim.user_info.visu_filename}")
 
 
 def generate_unique_seed(job_array_id: str, job_array_task_id: str) -> int:
@@ -330,18 +393,25 @@ def generate_unique_seed(job_array_id: str, job_array_task_id: str) -> int:
     return int(md5(seed_string.encode()).hexdigest()[:8], 16)
 
 
+def add_fov_box_to_gate_sim(sim: gate.Simulation):
+    source_box = sim.add_volume("Box", name="FOVBox")
+    source_box.size = [160.0, 160.0, 160.0]  # unit is mm
+    source_box.mother = "world"
+    source_box.material = "Air"
+
+
 def add_box_source(
     sim: gate.Simulation, energy_keV: float = 140.0, name: str = "BoxSource", *, args
 ):
-
     source = gate.sources.generic.GenericSource(name=name)
     source.particle = "gamma"
     source.energy.type = "mono"
     source.activity = args.source_activity_bq * gate.g4_units.Bq
     source.energy.mono = energy_keV * gate.g4_units.keV
     source.position.type = "box"
-    source.position.size = [210, 210, 210]  # unit is mms
-    sim.add_source(source, name=name)
+    source.position.size = [160, 160, 160]  # unit is mms
+    box_source = sim.add_source(source, name=name)
+    box_source.attached_to = "FOVBox"
 
 
 def add_stats_actor(sim: gate.Simulation, output_dir: Path, output_stem: str):
@@ -351,13 +421,13 @@ def add_stats_actor(sim: gate.Simulation, output_dir: Path, output_stem: str):
     stats_actor.output_filename = str(stats_path)
 
 
-def add_actors(sim: gate.Simulation, output_dir: Path, config: dict, output_stem: str):
-    pixel_array_name = [
-        f"pixel_{i + 1}" for i in range(config["crystal definition"]["n crystals"])
-    ]
+def add_actors(
+    sim: gate.Simulation, n_crystals: int, output_dir: Path, output_stem: str
+):
+    pixel_array_name = [f"pixel_{i + 1}" for i in range(n_crystals)]
 
     # Keep hits in-memory only as input to the singles chain.
-    for i in range(config["crystal definition"]["n crystals"]):
+    for i in range(n_crystals):
         pixel_hits_actor: gate.actors.digitizers.DigitizerHitsCollectionActor = (
             sim.add_actor("DigitizerHitsCollectionActor", f"PixelHits_{i + 1}")
         )
@@ -432,18 +502,20 @@ def configure_chunked_run_timing(sim: gate.Simulation, args):
 
 
 def run_simulation(
-    persist_data_dir: Path,
-    geometry_base_definition: dict,
-    geometry_transformation_dataframe: pl.DataFrame,
     args,
 ):
     output_dir = Path(args.output_dir).resolve()
-    print("Resolved output directory: ", output_dir)
+    print("Output directory: ", output_dir)
     print(
         "Slurm context: "
         f"job_array_id={args.job_array_id}, job_array_task_id={args.job_array_task_id}"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    persist_data_dir = qmirt.utils.filesystem.search_dir_up("persistent_data", __file__)
+    geometry_transformation_dataframe = get_geometry_definitions()
+    n_crystals = geometry_transformation_dataframe.shape[0]
+
     job_array_id = args.job_array_id
     job_array_task_id = args.job_array_task_id
 
@@ -453,11 +525,9 @@ def run_simulation(
     sim = gate.Simulation(progress_bar=True, output_dir=output_dir)
     sim.random_seed = unique_seed
     sim.volume_manager.add_material_database(persist_data_dir / "GateMaterials.db")
-
+    print(f"Using GateMaterials.db from {persist_data_dir}")
     # Add Geometry to the simulation
-    add_geometry_to_gate_sim(
-        sim, geometry_base_definition, geometry_transformation_dataframe
-    )
+    add_geometry_to_gate_sim(sim, geometry_transformation_dataframe)
 
     # Add Source to the simulation
     add_box_source(sim, energy_keV=140.0, args=args)
@@ -469,7 +539,12 @@ def run_simulation(
     print(f"Number of threads: {sim.number_of_threads}")
 
     output_stem = f"a_{job_array_id}_j_{job_array_task_id}"
-    add_actors(sim, output_dir, geometry_base_definition, output_stem)
+    add_actors(
+        sim,
+        n_crystals,
+        output_dir,
+        output_stem,
+    )
     add_stats_actor(sim, output_dir, output_stem)
     sim.run()
 
@@ -488,64 +563,62 @@ def parse_arguments():
         help="Directory to store simulation outputs.",
     )
     parser.add_argument(
-        "-j", "--job_array_id", type=int, required=True, help="SLURM job array ID."
+        "-j", "--job-array-id", type=int, default=0, help="SLURM job array ID."
     )
     parser.add_argument(
         "-k",
-        "--job_array_task_id",
+        "--job-array-task-id",
         type=int,
-        required=True,
+        default=0,
         help="SLURM job array task ID.",
     )
     parser.add_argument(
-        "--chunk_duration_s",
+        "-d",
+        "--chunk-duration-s",
         type=float,
         default=1.0,
         help="Duration of each chunk in seconds.",
     )
     parser.add_argument(
-        "-n", "--num_chunks", type=int, default=10, help="Number of chunks to simulate."
+        "-c", "--num-chunks", type=int, default=10, help="Number of chunks to simulate."
     )
     parser.add_argument(
-        "-t", "--num_threads", type=int, default=1, help="Number of threads to use."
+        "-t", "--num-threads", type=int, default=1, help="Number of threads to use."
     )
     parser.add_argument(
         "-s",
-        "--source_activity_bq",
+        "--source-activity-bq",
         type=float,
         default=1e6,
         help="Activity of the source in Becquerels.",
     )
     parser.add_argument(
-        "--geometry_only", action="store_true", help="Run geometry-only simulation."
+        "--geometry-only", action="store_true", help="Run geometry-only simulation."
     )
     parser.add_argument(
-        "--eventid_warn_threshold",
+        "--eventid-warn-threshold",
         type=int,
         default=1.5e9,
         help="Threshold for expected events per chunk to warn about EventID overflow.",
+    )
+    parser.add_argument(
+        "-m",
+        "--mapping-mode",
+        type=str,
+        choices=["sequential", "reverse", "random"],
+        default="sequential",
+        help="Mapping mode for crystal IDs to collimator configurations.",
     )
 
     return parser.parse_args()
 
 
 def main():
-    geometry_base_definition, geometry_transformation_dataframe = (
-        get_geometry_definitions()
-    )
     args = parse_arguments()
     if args.geometry_only:
-        run_simulation_with_geometry_only(
-            geometry_base_definition, geometry_transformation_dataframe
-        )
+        run_simulation_with_geometry_only(args)
     else:
-        persist_data_dir = qmirt.utils.filesystem.search_dir_up(
-            "persistent_data", __file__
-        )
         run_simulation(
-            persist_data_dir,
-            geometry_base_definition,
-            geometry_transformation_dataframe,
             args,
         )
 

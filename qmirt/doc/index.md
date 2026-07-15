@@ -1,3 +1,3 @@
-# qmirt-utility
+# qmirt
 
-Documentation placeholder for the `qmirt-utility` package. Add usage examples and API docs here.
+Documentation placeholder for the `qmirt` package. Add usage examples and API docs here.

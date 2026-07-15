@@ -382,6 +382,7 @@ def plot_meshes(
                 color=style["color"],
                 flatshading=True,
                 showlegend=True,
+                hovertemplate=f"<b>Mesh: {geom_key}</b><br>X: %{{x:.2f}}<br>Y: %{{y:.2f}}<br>Z: %{{z:.2f}}<extra></extra>",
             )
         )
 
@@ -405,6 +406,7 @@ def plot_meshes(
 
 def plot_wrl_file(
     wrl_path: str | Path,
+    *,
     geometry_styles: StyleMap | None = None,
     style_sheet: StyleSheetInput | None = None,
     exclude_patterns: PatternList | None = None,
