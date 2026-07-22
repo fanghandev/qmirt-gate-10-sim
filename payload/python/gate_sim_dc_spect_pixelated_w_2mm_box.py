@@ -13,16 +13,16 @@ from scipy.spatial.transform import Rotation
 import qmirt
 
 
-def _parse_activity_value_and_unit(
-    activity_value: str | list[str],
-) -> dict[str, float | str]:
+def _parse_activity_to_bq(
+    activity: str | list[str],
+) -> float:
     _ACTIVITY_VALUE_RE = re.compile(
         r"^\s*(?P<value>[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(?P<unit>[A-Za-zµμ]+)?\s*$"
     )
-    if isinstance(activity_value, list):
-        text = " ".join(activity_value).strip()
+    if isinstance(activity, list):
+        text = " ".join(activity)
     else:
-        text = activity_value.strip()
+        text = activity
 
     match = _ACTIVITY_VALUE_RE.match(text)
     if not match:
@@ -31,34 +31,7 @@ def _parse_activity_value_and_unit(
         )
 
     value = float(match.group("value"))
-    unit = (match.group("unit") or "Bq").replace("µ", "u").replace("μ", "u")
-    unit_lower = unit.lower()
-    canonical_unit = {
-        "bq": "Bq",
-        "kbq": "kBq",
-        "mbq": "MBq",
-        "gbq": "GBq",
-        "tbq": "TBq",
-        "ci": "Ci",
-        "mci": "mCi",
-        "uci": "uCi",
-        "nci": "nCi",
-        "pci": "pCi",
-    }[unit_lower]
-
-    return {"value": value, "unit": canonical_unit}
-
-
-def _activity_to_gate_units(activity: dict[str, float | str]) -> float:
-    unit = str(activity["unit"])
-    if not hasattr(gate.g4_units, unit):
-        raise ValueError(f"Unsupported activity unit: {unit}")
-    return float(activity["value"]) * getattr(gate.g4_units, unit)
-
-
-def _activity_to_bq(activity: dict[str, float | str]) -> float:
-    value = float(activity["value"])
-    unit = str(activity["unit"]).replace("µ", "u").replace("μ", "u").lower()
+    unit = (match.group("unit") or "Bq").replace("µ", "u").replace("μ", "u").lower()
     unit_scale_to_bq = {
         "bq": 1.0,
         "kbq": 1e3,
@@ -68,11 +41,9 @@ def _activity_to_bq(activity: dict[str, float | str]) -> float:
         "ci": 3.7e10,
         "mci": 3.7e7,
         "uci": 3.7e4,
-        "nci": 3.7e1,
-        "pci": 3.7e-2,
     }
     if unit not in unit_scale_to_bq:
-        raise ValueError(f"Unsupported activity unit: {activity['unit']}")
+        raise ValueError(f"Unsupported activity unit: {unit}")
     return value * unit_scale_to_bq[unit]
 
 
@@ -184,9 +155,9 @@ def add_Jaszczak_phantom(sim: gate.Simulation):
 
 def add_background_source(
     sim: gate.Simulation,
+    args,
+    *,
     phantom_name: str = "Jaszczak_Phantom",
-    activity: dict[str, float | str] | None = None,
-    source_type: str = "Gamma-140",
 ):
     """
     Adds a background radioactive source to the specified phantom volume.
@@ -196,12 +167,12 @@ def add_background_source(
     Args:
         sim: The opengate simulation object.
         phantom_name: Name of the mother volume (water cylinder).
-        activity_mCi: Total source activity in mCi.
-        source_type: 'Gamma-140', 'Tc-99m', or 'Co-57'.
+        args: Command-line arguments containing source type and activity.
     """
     # ========================================================
     # Add Background Radioactive Source
     # ========================================================
+    source_type = args.source_type
     source = sim.add_source("GenericSource", f"{source_type}_Background")
 
     # 1. Particle Type Definition based on selected source type
@@ -255,9 +226,12 @@ def add_background_source(
     source.position.confine = phantom_name
 
     # 4. Activity Setting
-    if activity is None:
-        activity = {"value": 10.0, "unit": "mCi"}
-    source.activity = _activity_to_gate_units(activity)
+    source.activity = (
+        _parse_activity_to_bq(args.source_activity) * gate.g4_units.Bq
+    )  # Convert to Bq for GATE
+    print(
+        f"Background source '{source_type}' added to '{phantom_name}' with activity {source.activity:.2e} Bq."
+    )
     return source
 
 
@@ -268,7 +242,7 @@ def add_point_source(
     source = gate.sources.generic.GenericSource(name=name)
     source.particle = "gamma"
     source.energy.type = "mono"
-    source.activity = _activity_to_gate_units(args.source_activity)
+    source.activity = _parse_activity_to_bq(args.source_activity) * gate.g4_units.Bq
     source.energy.mono = energy_keV * gate.g4_units.keV
     source.position.type = "point"
     source.position.point = [0, 0, 0]  # unit is mm
@@ -814,7 +788,7 @@ def add_box_source(
     source = gate.sources.generic.GenericSource(name=name)
     source.particle = "gamma"
     source.energy.type = "mono"
-    source.activity = _activity_to_gate_units(args.source_activity)
+    source.activity = _parse_activity_to_bq(args.source_activity) * gate.g4_units.Bq
     source.energy.mono = energy_keV * gate.g4_units.keV
     source.position.type = "box"
     source.position.size = [210, 210, 210]  # unit is mms
@@ -826,8 +800,8 @@ def configure_chunked_run_timing(sim: gate.Simulation, args):
         raise ValueError("chunk_duration_s must be > 0")
     if args.num_chunks <= 0:
         raise ValueError("num_chunks must be > 0")
-    activity_value = float(args.source_activity["value"])
-    if activity_value <= 0:
+    source_activity_bq = _parse_activity_to_bq(args.source_activity)
+    if source_activity_bq <= 0:
         raise ValueError("source activity value must be > 0")
 
     sec = gate.g4_units.s
@@ -837,9 +811,7 @@ def configure_chunked_run_timing(sim: gate.Simulation, args):
         for i in range(args.num_chunks)
     ]
 
-    expected_events_per_chunk_per_thread = (
-        _activity_to_bq(args.source_activity) * args.chunk_duration_s
-    )
+    expected_events_per_chunk_per_thread = source_activity_bq * args.chunk_duration_s
     expected_events_per_chunk = expected_events_per_chunk_per_thread * int(
         args.num_threads
     )
@@ -848,10 +820,7 @@ def configure_chunked_run_timing(sim: gate.Simulation, args):
     print(f"Chunk duration (s): {args.chunk_duration_s}")
     print(f"Number of chunks: {args.num_chunks}")
     print(f"Number of threads: {args.num_threads}")
-    print(
-        "Source activity: "
-        f"{args.source_activity['value']} {args.source_activity['unit']}"
-    )
+    print(f"Source activity: {source_activity_bq:.3e} Bq ({args.source_activity})")
     print(
         "Expected primaries/chunk/thread (mean): "
         f"{expected_events_per_chunk_per_thread:.3e}"
@@ -930,12 +899,7 @@ def run_simulation(config: dict, persist_data_dir: Path, args):
     if simulation_mode == "box":
         add_box_source(sim, energy_keV=140.0, args=args)
     else:
-        add_background_source(
-            sim,
-            phantom_name="Jaszczak_Phantom",
-            activity=args.source_activity,
-            source_type=getattr(args, "phantom_source_type", "Tc-99m"),
-        )
+        add_background_source(sim, args, phantom_name="Jaszczak_Phantom")
 
     sim.number_of_threads = int(args.num_threads)
     configure_chunked_run_timing(sim, args)
@@ -1040,7 +1004,7 @@ def parse_args(args=None):
         metavar=("VALUE", "UNIT"),
         help=(
             "Source activity as a value with an optional unit, for example: "
-            "1.2e10 Bq, 10 mCi, 0.01 Ci, or 1e6."
+            "1.2e10 Bq, 0.01 Ci, or 1e6."
         ),
     )
     parser.add_argument(
@@ -1069,7 +1033,7 @@ def parse_args(args=None):
         help="Dump the geometry tree and enable verbose Geant4 output before running.",
     )
     parser.add_argument(
-        "-t", "--num-threads", type=int, default=1, help="Number of threads requested."
+        "-n", "--num-threads", type=int, default=1, help="Number of threads requested."
     )
     parser.add_argument(
         "--xlsx-path",
@@ -1128,16 +1092,14 @@ def parse_args(args=None):
         ),
     )
     parser.add_argument(
-        "--phantom-source-type",
+        "-t",
+        "--source-type",
         type=str,
         default="Tc-99m",
         choices=["Gamma-140", "Tc-99m", "Co-57"],
         help="Radioisotope used for the Jaszczak phantom background source.",
     )
     parsed_args = parser.parse_args(args)
-    parsed_args.source_activity = _parse_activity_value_and_unit(
-        parsed_args.source_activity
-    )
     return parsed_args
 
 
