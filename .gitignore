@@ -226,3 +226,4 @@ __marimo__/
 results/**/*.png
 *.root
 *.zip
+a_local_j_*_sim_stats.txt

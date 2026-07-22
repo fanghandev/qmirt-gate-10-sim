@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import os
+import re
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +13,254 @@ from scipy.spatial.transform import Rotation
 import qmirt
 
 
+def _parse_activity_value_and_unit(
+    activity_value: str | list[str],
+) -> dict[str, float | str]:
+    _ACTIVITY_VALUE_RE = re.compile(
+        r"^\s*(?P<value>[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(?P<unit>[A-Za-zµμ]+)?\s*$"
+    )
+    if isinstance(activity_value, list):
+        text = " ".join(activity_value).strip()
+    else:
+        text = activity_value.strip()
+
+    match = _ACTIVITY_VALUE_RE.match(text)
+    if not match:
+        raise argparse.ArgumentTypeError(
+            "source activity must be a number optionally followed by a unit, such as '1.2e10 Bq', '10 mCi', or '0.01 Ci'"
+        )
+
+    value = float(match.group("value"))
+    unit = (match.group("unit") or "Bq").replace("µ", "u").replace("μ", "u")
+    unit_lower = unit.lower()
+    canonical_unit = {
+        "bq": "Bq",
+        "kbq": "kBq",
+        "mbq": "MBq",
+        "gbq": "GBq",
+        "tbq": "TBq",
+        "ci": "Ci",
+        "mci": "mCi",
+        "uci": "uCi",
+        "nci": "nCi",
+        "pci": "pCi",
+    }[unit_lower]
+
+    return {"value": value, "unit": canonical_unit}
+
+
+def _activity_to_gate_units(activity: dict[str, float | str]) -> float:
+    unit = str(activity["unit"])
+    if not hasattr(gate.g4_units, unit):
+        raise ValueError(f"Unsupported activity unit: {unit}")
+    return float(activity["value"]) * getattr(gate.g4_units, unit)
+
+
+def _activity_to_bq(activity: dict[str, float | str]) -> float:
+    value = float(activity["value"])
+    unit = str(activity["unit"]).replace("µ", "u").replace("μ", "u").lower()
+    unit_scale_to_bq = {
+        "bq": 1.0,
+        "kbq": 1e3,
+        "mbq": 1e6,
+        "gbq": 1e9,
+        "tbq": 1e12,
+        "ci": 3.7e10,
+        "mci": 3.7e7,
+        "uci": 3.7e4,
+        "nci": 3.7e1,
+        "pci": 3.7e-2,
+    }
+    if unit not in unit_scale_to_bq:
+        raise ValueError(f"Unsupported activity unit: {activity['unit']}")
+    return value * unit_scale_to_bq[unit]
+
+
+# Helper function: Generate a triangular mesh array of cold rods within a 60-degree sector
+def add_rod_sector(sim, mother_name, sector_index, rod_radius_mm, spacing_mm):
+    """
+    sector_index: 0 to 5, representing the six 60-degree sectors
+    rod_radius_mm: Radius of the cold rods in this sector
+    spacing_mm: Center-to-center spacing of the rods (typically 2x the diameter)
+    """
+    cm = gate.g4_units.cm
+    mm = gate.g4_units.mm
+    rod_height = 8.8 * cm
+    z_offset_rods = -4.65 * cm
+
+    # Base rotation angle (each sector spans 60 degrees)
+    theta = np.deg2rad(sector_index * 60)
+    # Rotation matrix to map the 0-degree reference sector to its target position
+    rot_matrix = np.array(
+        [[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]]
+    )
+
+    # Generate triangular grid points within the 60-degree sector (simplified high-density generation strategy)
+    # In practice, adjust 'rows' to control the number of rod layers
+    rows = int((10.0 * cm) / (spacing_mm * mm))
+    rod_count = 0
+
+    for row in range(1, rows):
+        # Increment the number of rods per row
+        for col in range(row):
+            # Local coordinate system for the 0-degree reference sector (X is the central axis of the sector)
+            local_x = row * spacing_mm * mm * np.cos(np.deg2rad(30))
+            # Y-coordinates are distributed symmetrically across the central axis based on the column index
+            local_y = (col - (row - 1) / 2.0) * spacing_mm * mm
+
+            # Discard if the coordinate exceeds the inner radius of the main cylinder (leaving a marginal gap)
+            if np.sqrt(local_x**2 + local_y**2) + rod_radius_mm * mm > 9.8 * cm:
+                continue
+
+            # Apply the rotation matrix to map coordinates to the global XY plane
+            global_xy = rot_matrix.dot(np.array([local_x, local_y]))
+
+            rod = sim.add_volume("TubsVolume", f"ColdRod_S{sector_index}_{rod_count}")
+            rod.mother = mother_name
+            rod.material = "G4_PLEXIGLASS"
+            rod.rmin = 0
+            rod.rmax = rod_radius_mm * mm
+            rod.dz = rod_height * 0.5
+            rod.translation = [global_xy[0], global_xy[1], z_offset_rods]
+            rod.color = [0.8, 0.8, 0.8, 1]
+
+            rod_count += 1
+
+
+def add_Jaszczak_phantom(sim: gate.Simulation):
+    # ========================================================
+    # 1. Define Mother Volume - Filled with radioactive water solution
+    # ========================================================
+    # Use Geant4's built-in NIST material database to avoid loading external db files
+
+    cm = gate.g4_units.cm
+    mm = gate.g4_units.mm
+    phantom = sim.add_volume("TubsVolume", "Jaszczak_Phantom")
+    phantom.mother = "world"
+    phantom.material = "G4_WATER"
+    phantom.rmin = 0 * cm
+    phantom.rmax = 10.2 * cm
+    phantom.dz = 18.6 * cm * 0.5  # Total cylinder height
+    # Set display color: RGBA (translucent blue)
+    phantom.color = [0, 0, 1, 0.2]
+
+    # ========================================================
+    # 2. Construct upper section Cold Spheres
+    # ========================================================
+    # Cold sphere diameters (mm): 31.8, 25.4, 19.1, 15.9, 12.7, 9.5
+    sphere_radii_mm = [15.9, 12.7, 9.55, 7.95, 6.35, 4.75]
+    sphere_angles_deg = [0, 60, 120, 180, 240, 300]
+    sphere_placement_radius = 5.72 * cm
+    z_offset_spheres = 4.65 * cm  # Z-axis offset for the upper section
+
+    for i, (r, angle) in enumerate(zip(sphere_radii_mm, sphere_angles_deg)):
+        sph = sim.add_volume("Sphere", f"ColdSphere_{i}")
+        sph.mother = (
+            "Jaszczak_Phantom"  # CSG: Placed directly in water as a daughter volume
+        )
+        sph.material = "G4_PLEXIGLASS"  # Acrylic (PMMA) material
+        sph.rmin = 0
+        sph.rmax = r * mm
+
+        # Calculate XY coordinates directly in Python
+        x = sphere_placement_radius * np.cos(np.deg2rad(angle))
+        y = sphere_placement_radius * np.sin(np.deg2rad(angle))
+        sph.translation = [x, y, z_offset_spheres]
+        sph.color = [1, 1, 1, 0.8]  # Opaque white
+
+    # ========================================================
+    # 3. Construct lower section Cold Rods array
+    # ========================================================
+
+    # Cold rod radius specifications for the 6 sectors (mm): 6.35, 5.55, 4.75, 3.95, 3.2, 2.4
+    rod_radii_mm = [6.35, 5.55, 4.75, 3.95, 3.2, 2.4]
+
+    # Loop to generate cold rods for all 6 sectors
+    for sector, r in enumerate(rod_radii_mm):
+        # Center-to-center spacing is typically 2x the rod diameter
+        spacing = r * 4.0
+        add_rod_sector(sim, "Jaszczak_Phantom", sector, r, spacing)
+
+
+def add_background_source(
+    sim: gate.Simulation,
+    phantom_name: str = "Jaszczak_Phantom",
+    activity: dict[str, float | str] | None = None,
+    source_type: str = "Gamma-140",
+):
+    """
+    Adds a background radioactive source to the specified phantom volume.
+    Leverages GATE's 'confine' feature combined with the CSG mother-daughter
+    hierarchy to automatically exclude radioactive emissions from the cold rods and spheres.
+
+    Args:
+        sim: The opengate simulation object.
+        phantom_name: Name of the mother volume (water cylinder).
+        activity_mCi: Total source activity in mCi.
+        source_type: 'Gamma-140', 'Tc-99m', or 'Co-57'.
+    """
+    # ========================================================
+    # Add Background Radioactive Source
+    # ========================================================
+    source = sim.add_source("GenericSource", f"{source_type}_Background")
+
+    # 1. Particle Type Definition based on selected source type
+    if source_type.upper() == "GAMMA-140":
+        # Pure 140 keV monoenergetic gamma (Fastest simulation speed)
+        # Skips all atomic de-excitations, X-rays, and Auger electrons.
+        # Note: True Tc-99m photopeak is 140.5 keV, adjusted to 140.0 keV per request.
+        source.particle = "gamma"
+        source.energy.type = "mono"
+        source.energy.mono = 140.0 * gate.g4_units.keV
+
+    elif source_type.upper() == "TC-99M":
+        # Full Tc-99m metastable decay cascade.
+        # Simulates the isomeric transition including internal conversion and X-rays.
+        # GATE/Geant4 requires specifying the excitation energy (142.6836 keV)
+        # to correctly identify the metastable state (Tc-99m) instead of the ground state (Tc-99).
+        source.particle = "ion 43 99"
+        # source.energy.type = "mono"
+        # source.energy.mono = 0 * gate.keV
+        # Depending on the specific opengate-python version, excitation energy for isomers
+        # is typically passed via the ion property or appending to the string.
+        # e.g., source.particle = 'ion 43 99 0 142.6836' (Z, A, Q, E_ex in keV)
+        source.particle = "ion 43 99 0 142.6836"
+
+    elif source_type.upper() == "CO-57":
+        # Cobalt-57 full radioactive decay (Z=27, A=57)
+        # Includes the 122 keV and 136 keV gammas, plus Fe X-rays.
+        source.particle = "ion 27 57"
+        # source.energy.type = "mono"
+        # source.energy.mono = 0 * gate.g4_units.keV
+
+    else:
+        raise ValueError(
+            "Unsupported source type. Please choose 'Gamma-140', 'Tc-99m', or 'Co-57'."
+        )
+
+    # 2. Spatial Distribution Setting
+    # Define a cylindrical emission region identical to the main water cavity dimensions
+    source.position.type = "cylinder"
+    source.position.radius = 10.2 * gate.g4_units.cm
+    source.position.dz = 18.6 * gate.g4_units.cm
+    source.position.translation = [
+        0,
+        0,
+        0,
+    ]  # Aligned with the center of the phantom cavity
+
+    # 3. Core Constraint: Cold Spot Exclusion
+    # Strictly confine photon emission to the volume physically named by 'phantom_name'.
+    # Due to the mother-daughter CSG hierarchy, daughters (acrylic rods/spheres) are excluded automatically.
+    source.position.confine = phantom_name
+
+    # 4. Activity Setting
+    if activity is None:
+        activity = {"value": 10.0, "unit": "mCi"}
+    source.activity = _activity_to_gate_units(activity)
+    return source
+
+
 def add_point_source(
     sim: gate.Simulation, energy_keV: float = 140.0, name: str = "PointSource", *, args
 ):
@@ -19,7 +268,7 @@ def add_point_source(
     source = gate.sources.generic.GenericSource(name=name)
     source.particle = "gamma"
     source.energy.type = "mono"
-    source.activity = args.source_activity_bq * gate.g4_units.Bq
+    source.activity = _activity_to_gate_units(args.source_activity)
     source.energy.mono = energy_keV * gate.g4_units.keV
     source.position.type = "point"
     source.position.point = [0, 0, 0]  # unit is mm
@@ -92,7 +341,7 @@ def get_dc_spect_geometry_config(
     hole_fov_center_distance_mm_np = np.linalg.norm(
         collimator_hole_coords_mm_np, axis=1
     )
-    azmuthal_angle_deg = (
+    azimuthal_angle_deg = (
         np.arctan2(
             collimator_hole_coords_mm_np[:, 1], collimator_hole_coords_mm_np[:, 0]
         )
@@ -115,9 +364,9 @@ def get_dc_spect_geometry_config(
     ) * np.column_stack(
         (
             np.cos(np.radians(polar_angle_deg))
-            * np.cos(np.radians(azmuthal_angle_deg)),
+            * np.cos(np.radians(azimuthal_angle_deg)),
             np.cos(np.radians(polar_angle_deg))
-            * np.sin(np.radians(azmuthal_angle_deg)),
+            * np.sin(np.radians(azimuthal_angle_deg)),
             np.sin(np.radians(polar_angle_deg)),
         )
     )
@@ -131,9 +380,9 @@ def get_dc_spect_geometry_config(
     ) * np.column_stack(
         (
             np.cos(np.radians(polar_angle_deg))
-            * np.cos(np.radians(azmuthal_angle_deg)),
+            * np.cos(np.radians(azimuthal_angle_deg)),
             np.cos(np.radians(polar_angle_deg))
-            * np.sin(np.radians(azmuthal_angle_deg)),
+            * np.sin(np.radians(azimuthal_angle_deg)),
             np.sin(np.radians(polar_angle_deg)),
         )
     )
@@ -162,9 +411,9 @@ def get_dc_spect_geometry_config(
     ) * np.column_stack(
         (
             np.cos(np.radians(polar_angle_deg))
-            * np.cos(np.radians(azmuthal_angle_deg)),
+            * np.cos(np.radians(azimuthal_angle_deg)),
             np.cos(np.radians(polar_angle_deg))
-            * np.sin(np.radians(azmuthal_angle_deg)),
+            * np.sin(np.radians(azimuthal_angle_deg)),
             np.sin(np.radians(polar_angle_deg)),
         )
     )
@@ -200,7 +449,7 @@ def get_dc_spect_geometry_config(
         "pixel_size_mm": pixel_size_mm,
         "n_pixels": n_pixels,
         "detector_crystal_translation_mm": detector_crystal_translation_mm,
-        "azmuthal_angle_deg": azmuthal_angle_deg,
+        "azimuthal_angle_deg": azimuthal_angle_deg,
         "polar_angle_deg": polar_angle_deg,
         "shielding_file_path": str(shielding_file_path),
     }
@@ -311,9 +560,9 @@ def get_head_rotation_matrix(config: dict, id: int):
     # First rotate around x axis by 90 degrees
     rx_0 = Rotation.from_euler("x", -90, degrees=True).as_matrix()
     rz_0 = Rotation.from_euler("z", 90, degrees=True).as_matrix()
-    # Then rotate around z axis by the azmuthal angle
+    # Then rotate around z axis by the azimuthal angle
     rz_1 = Rotation.from_euler(
-        "z", config["azmuthal_angle_deg"][id], degrees=True
+        "z", config["azimuthal_angle_deg"][id], degrees=True
     ).as_matrix()
     # Then rotate around y axis by the polar angle
     rx_1 = Rotation.from_euler(
@@ -380,53 +629,124 @@ def add_shielding_to_gate_sim(sim: gate.Simulation, config: dict):
     shielding.material = "Lead"
 
 
-def save_simulation_geometry_to_wrl(config: dict, persist_data_dir: Path, args):
-    sim = gate.Simulation()
-    sim.volume_manager.add_material_database(persist_data_dir / "GateMaterials.db")
-
-    for i in range(80):
-        print(f"Adding geometry for head {i + 1}...")
-        # Add the i_th collimator
-        add_collimator_to_gate_sim(sim, config, id=i)
-        # Add the i_th pixelated detector crystal
-        add_pixelated_detector_to_gate_sim(sim, config, id=i)
-
-    # add_shielding_to_gate_sim(sim, config)  # Add the shielding as an example
-
-    if args.debug_geometry:
-        print(
-            "Geometry debug mode enabled: dumping volume tree and enabling verbose G4 output."
-        )
-        print(f"check_volumes_overlap: {sim.check_volumes_overlap}")
-        print(sim.volume_manager.dump_volume_tree())
-        sim.g4_verbose = True
-        sim.g4_verbose_level = 2
+def _configure_wrl_export(
+    sim: gate.Simulation, *, force_phantom_wireframe: bool = False
+):
     sim.user_info.visu = True
     sim.user_info.visu_type = "vrml_file_only"
 
     sim.visu_commands_vrml = ["/vis/open VRML2FILE", "/vis/drawVolume"]
     sim.visu_commands_vrml.append("/vis/geometry/set/visibility world 0 false")
-    for i in range(80):
-        sim.visu_commands_vrml.append(
-            f"/vis/geometry/set/visibility DetectorCrystal_{i + 1} 0 false"
-        )
-    sim.visu_commands_vrml.append("/vis/viewer/flush")
 
-    print("Storing geometry into wrl file only without running the simulation...")
-    sim.user_info.visu_filename = str(
-        (persist_data_dir.parent / "dev" / "dc_spect_geometry_2mm_box.wrl").resolve()
+    if force_phantom_wireframe:
+        sim.visu_commands_vrml.append(
+            "/vis/geometry/set/forceWireframe Jaszczak_Phantom 0 true"
+        )
+
+
+def _apply_debug_geometry_settings(sim: gate.Simulation, args):
+    if not args.debug_geometry:
+        return
+
+    print(
+        "Geometry debug mode enabled: dumping volume tree and enabling verbose G4 output."
     )
+    print(f"check_volumes_overlap: {sim.check_volumes_overlap}")
+    print(sim.volume_manager.dump_volume_tree())
+    sim.g4_verbose = True
+    sim.g4_verbose_level = 2
+
+
+def _finalize_wrl_export(sim: gate.Simulation, visu_filename: Path | str):
+    sim.visu_commands_vrml.append("/vis/viewer/flush")
+    sim.user_info.visu_filename = str(Path(visu_filename).resolve())
     print(f"Geometry stored in {sim.user_info.visu_filename}")
     sim.run()
+
+
+def _add_scanner_geometry(
+    sim: gate.Simulation, config: dict, *, include_shielding: bool
+):
+    for i in range(80):
+        print(f"Adding geometry for head {i + 1}...")
+        add_collimator_to_gate_sim(sim, config, id=i)
+        add_pixelated_detector_to_gate_sim(sim, config, id=i)
+
+    if include_shielding:
+        add_shielding_to_gate_sim(sim, config)
+
+
+def _add_phantom_geometry(sim: gate.Simulation, config: dict):
+    print("Adding Jaszczak phantom geometry...")
+    add_Jaszczak_phantom(sim)
+
+
+def save_geometry_to_wrl(
+    config: dict,
+    persist_data_dir: Path,
+    args,
+    export_target: str = "scanner",
+):
+    """Export scanner, phantom, or combined geometry to a VRML file."""
+    sim = gate.Simulation()
+    sim.volume_manager.add_material_database(persist_data_dir / "GateMaterials.db")
+    wrl_output_dir = Path(args.output_dir).resolve()
+    wrl_output_dir.mkdir(parents=True, exist_ok=True)
+
+    export_target = export_target.lower()
+    if export_target not in {"scanner", "phantom", "both"}:
+        raise ValueError("export_target must be one of: scanner, phantom, both")
+
+    include_shielding = bool(getattr(args, "with_shielding", False))
+
+    if export_target == "scanner":
+        _add_scanner_geometry(sim, config, include_shielding=include_shielding)
+        _configure_wrl_export(sim)
+        _apply_debug_geometry_settings(sim, args)
+        print("Storing scanner geometry to WRL without running the simulation...")
+        _finalize_wrl_export(
+            sim,
+            wrl_output_dir / "dc_spect_geometry_2mm_box.wrl",
+        )
+        return
+
+    if export_target == "phantom":
+        _add_phantom_geometry(sim, config)
+    else:
+        _add_scanner_geometry(sim, config=config, include_shielding=include_shielding)
+        _add_phantom_geometry(sim, config)
+    _configure_wrl_export(sim, force_phantom_wireframe=True)
+
+    _apply_debug_geometry_settings(sim, args)
+
+    if export_target == "phantom":
+        filename = "jaszczak_phantom_only.wrl"
+    else:
+        filename = "scanner_and_phantom_geometry.wrl"
+
+    print("Storing geometry into wrl file only without running the simulation...")
+    _finalize_wrl_export(sim, wrl_output_dir / filename)
+
+
+def save_simulation_geometry_to_wrl(config: dict, persist_data_dir: Path, args):
+    save_geometry_to_wrl(
+        config,
+        persist_data_dir,
+        args,
+        export_target=(
+            args.geometry_only if isinstance(args.geometry_only, str) else "scanner"
+        ),
+    )
 
 
 def render_wrl_to_html(wrl_path: Path, html_output_path: Path):
     import pyvista as pv
 
     print(f"Rendering WRL geometry from {wrl_path} to HTML for visualization...")
-    wrl_path = (
-        "/home/fanghan/Work/RPIL/QMIRT/gate10mc/dev/dc_spect_geometry_2mm_box.wrl"
-    )
+    wrl_path = Path(wrl_path)
+    if not wrl_path.exists():
+        raise FileNotFoundError(f"WRL file not found at: {wrl_path}")
+
     original_solid_names = extract_solid_names_from_wrl(wrl_path)
 
     detector_mesh = load_wrl_as_mesh(wrl_path)
@@ -494,7 +814,7 @@ def add_box_source(
     source = gate.sources.generic.GenericSource(name=name)
     source.particle = "gamma"
     source.energy.type = "mono"
-    source.activity = args.source_activity_bq * gate.g4_units.Bq
+    source.activity = _activity_to_gate_units(args.source_activity)
     source.energy.mono = energy_keV * gate.g4_units.keV
     source.position.type = "box"
     source.position.size = [210, 210, 210]  # unit is mms
@@ -506,8 +826,9 @@ def configure_chunked_run_timing(sim: gate.Simulation, args):
         raise ValueError("chunk_duration_s must be > 0")
     if args.num_chunks <= 0:
         raise ValueError("num_chunks must be > 0")
-    if args.source_activity_bq <= 0:
-        raise ValueError("source_activity_bq must be > 0")
+    activity_value = float(args.source_activity["value"])
+    if activity_value <= 0:
+        raise ValueError("source activity value must be > 0")
 
     sec = gate.g4_units.s
     interval_duration = args.chunk_duration_s * sec
@@ -517,7 +838,7 @@ def configure_chunked_run_timing(sim: gate.Simulation, args):
     ]
 
     expected_events_per_chunk_per_thread = (
-        args.source_activity_bq * args.chunk_duration_s
+        _activity_to_bq(args.source_activity) * args.chunk_duration_s
     )
     expected_events_per_chunk = expected_events_per_chunk_per_thread * int(
         args.num_threads
@@ -527,7 +848,10 @@ def configure_chunked_run_timing(sim: gate.Simulation, args):
     print(f"Chunk duration (s): {args.chunk_duration_s}")
     print(f"Number of chunks: {args.num_chunks}")
     print(f"Number of threads: {args.num_threads}")
-    print(f"Source activity (Bq): {args.source_activity_bq}")
+    print(
+        "Source activity: "
+        f"{args.source_activity['value']} {args.source_activity['unit']}"
+    )
     print(
         "Expected primaries/chunk/thread (mean): "
         f"{expected_events_per_chunk_per_thread:.3e}"
@@ -580,15 +904,38 @@ def run_simulation(config: dict, persist_data_dir: Path, args):
     sim.random_seed = unique_seed
     sim.volume_manager.add_material_database(persist_data_dir / "GateMaterials.db")
 
-    # Add Geometry to the simulation
-    add_dc_spect_geometry(sim, config)
+    simulation_mode = getattr(args, "mode", "box")
+    print(f"Simulation mode: {simulation_mode}")
+
+    # Add Geometry to the simulation.
+    # The phantom mode keeps the center source box out of the world volume to avoid overlaps.
+    if simulation_mode == "box":
+        _add_scanner_geometry(
+            sim, config, include_shielding=bool(getattr(args, "with_shielding", False))
+        )
+    elif simulation_mode == "jaszczak":
+        _add_scanner_geometry(
+            sim, config, include_shielding=bool(getattr(args, "with_shielding", False))
+        )
+        _add_phantom_geometry(sim, config)
+    else:
+        raise ValueError("simulation_mode must be one of: 'box', 'jaszczak'")
+
     if args.with_shielding:
         print("Simulate with lead shielding = True")
-        add_shielding_to_gate_sim(sim, config)
     else:
         print("Simulate with lead shielding = False")
+
     # Add Source to the simulation
-    add_box_source(sim, energy_keV=140.0, args=args)
+    if simulation_mode == "box":
+        add_box_source(sim, energy_keV=140.0, args=args)
+    else:
+        add_background_source(
+            sim,
+            phantom_name="Jaszczak_Phantom",
+            activity=args.source_activity,
+            source_type=getattr(args, "phantom_source_type", "Tc-99m"),
+        )
 
     sim.number_of_threads = int(args.num_threads)
     configure_chunked_run_timing(sim, args)
@@ -687,10 +1034,14 @@ def parse_args(args=None):
 
     parser.add_argument(
         "-s",
-        "--source-activity-bq",
-        type=float,
-        default=1e6,
-        help="Source activity in Bq used with run timing intervals.",
+        "--source-activity",
+        nargs="+",
+        default=["1e6", "Bq"],
+        metavar=("VALUE", "UNIT"),
+        help=(
+            "Source activity as a value with an optional unit, for example: "
+            "1.2e10 Bq, 10 mCi, 0.01 Ci, or 1e6."
+        ),
     )
     parser.add_argument(
         "-d",
@@ -729,8 +1080,15 @@ def parse_args(args=None):
     parser.add_argument(
         "-g",
         "--geometry-only",
-        action="store_true",
-        help="Store geometry to WRL only without running the simulation",
+        nargs="?",
+        const="scanner",
+        default=False,
+        type=str,
+        choices=["scanner", "phantom", "both"],
+        help=(
+            "Store geometry to WRL only without running the simulation. "
+            "Optionally choose scanner, phantom, or both; default is scanner."
+        ),
     )
     parser.add_argument(
         "-o",
@@ -758,7 +1116,29 @@ def parse_args(args=None):
         action="store_true",
         help="Include shielding in the simulation.",
     )
-    return parser.parse_args(args)
+    parser.add_argument(
+        "-m",
+        "--mode",
+        type=str,
+        default="box",
+        choices=["box", "jaszczak"],
+        help=(
+            "Select the simulation setup: box for SRM generation or "
+            "jaszczak for phantom acquisition."
+        ),
+    )
+    parser.add_argument(
+        "--phantom-source-type",
+        type=str,
+        default="Tc-99m",
+        choices=["Gamma-140", "Tc-99m", "Co-57"],
+        help="Radioisotope used for the Jaszczak phantom background source.",
+    )
+    parsed_args = parser.parse_args(args)
+    parsed_args.source_activity = _parse_activity_value_and_unit(
+        parsed_args.source_activity
+    )
+    return parsed_args
 
 
 def main():
@@ -779,9 +1159,14 @@ def main():
         config = get_dc_spect_geometry_config(
             _resolve_xlsx_path(persistent_data_dir, args.xlsx_path),
             stl_dir=persistent_data_dir / "cardiac_spect" / "stl",
-            n_pixels=(2, 2, 1),
+            n_pixels=(1, 1, 1),
         )
-        save_simulation_geometry_to_wrl(config, persistent_data_dir, args)
+        save_geometry_to_wrl(
+            config,
+            persistent_data_dir,
+            args,
+            export_target=args.geometry_only,
+        )
     else:
         config = get_dc_spect_geometry_config(
             _resolve_xlsx_path(persistent_data_dir, args.xlsx_path),
