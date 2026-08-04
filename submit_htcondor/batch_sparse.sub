@@ -1,0 +1,19 @@
+executable = wrapper_sparse_batch.sh
+arguments = $(ClusterId) $(ProcId)
+
++SingularityImage = "/cvmfs/singularity.opensciencegrid.org/htc/ubuntu:24.04"
+transfer_input_files = ../payload, ../persistent_data, ../qmirt, ../filenames.txt, requirements_sparse.txt
+
+# Keep worker outputs in the OSPool-backed data area
+transfer_output_files = sparse_srm_chunks_$(ClusterId)_$(ProcId).tar.gz
+transfer_output_remaps = "sparse_srm_chunks_$(ClusterId)_$(ProcId).tar.gz = $(out_dir)/sparse_srm_chunks_$(ClusterId)_$(ProcId).tar.gz"
+
+log = $(log_dir)/sparse_job_$(ClusterId)_$(ProcId).log
+output = $(log_dir)/sparse_job_$(ClusterId)_$(ProcId).out
+error = $(log_dir)/sparse_job_$(ClusterId)_$(ProcId).err
+
+request_cpus = 1
+request_memory = 4GB
+request_disk = 5GB
+
+queue 100
