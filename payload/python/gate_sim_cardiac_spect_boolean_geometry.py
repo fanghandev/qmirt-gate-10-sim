@@ -429,59 +429,88 @@ def get_dc_spect_geometry_config(
     }
 
 
-def construct_collimator_box_gate_geometry(config: dict, id: int):
-    collimator_body_inner = gate.geometry.volumes.TrdVolume(  # type: ignore
-        name=f"CollimatorBody_{id + 1}"
+def _make_shell_trd(
+    *,
+    name: str,
+    top_mm: float,
+    bottom_mm: float,
+    length_mm: float,
+    extra_length_mm: float = 0.1,
+):
+    outer = gate.geometry.volumes.TrdVolume(  # type: ignore
+        name=f"{name}_outer"
     )
-    collimator_body_outer = gate.geometry.volumes.TrdVolume(  # type: ignore
-        name=f"CollimatorBody_outer_{id + 1}"
+    inner = gate.geometry.volumes.TrdVolume(  # type: ignore
+        name=name
     )
-    collimator_body_outer.dx1 = config["collimator_body_outer_top_mm_np"][id] * 0.5
-    collimator_body_outer.dy1 = config["collimator_body_outer_top_mm_np"][id] * 0.5
-    collimator_body_outer.dx2 = config["collimator_body_outer_bottom_mm_np"][id] * 0.5
-    collimator_body_outer.dy2 = config["collimator_body_outer_bottom_mm_np"][id] * 0.5
-    collimator_body_outer.dz = config["collimator_body_length_mm_np"][id] * 0.5
-    collimator_body_inner.dx1 = config["collimator_body_inner_top_mm_np"][id] * 0.5
-    collimator_body_inner.dy1 = config["collimator_body_inner_top_mm_np"][id] * 0.5
-    collimator_body_inner.dx2 = config["collimator_body_inner_bottom_mm_np"][id] * 0.5
-    collimator_body_inner.dy2 = config["collimator_body_inner_bottom_mm_np"][id] * 0.5
-    collimator_body_inner.dz = config["collimator_body_length_mm_np"][id] * 0.5 + 0.1
+    outer.dx1 = top_mm * 0.5
+    outer.dy1 = top_mm * 0.5
+    outer.dx2 = bottom_mm * 0.5
+    outer.dy2 = bottom_mm * 0.5
+    outer.dz = length_mm * 0.5
+    inner.dx1 = top_mm * 0.5
+    inner.dy1 = top_mm * 0.5
+    inner.dx2 = bottom_mm * 0.5
+    inner.dy2 = bottom_mm * 0.5
+    inner.dz = length_mm * 0.5 + extra_length_mm
+    return outer, inner
 
-    # Add a box with 1 mm thickness around the crystal.
-    # Use unite_volumes to create the box by subtracting the inner box from the outer box
-    # The outer box height is 11 mm and inner box height 10 mm
 
-    collimator_box_outer = gate.geometry.volumes.BoxVolume(  # type: ignore
-        name=f"CollimatorBox_outer_{id + 1}"
+def _make_shell_box(
+    *,
+    name: str,
+    outer_size_mm: np.ndarray,
+    inner_size_mm: np.ndarray,
+    inner_translation_mm: list[float] | None = None,
+):
+    outer = gate.geometry.volumes.BoxVolume(  # type: ignore
+        name=f"{name}_outer"
     )
-    collimator_box_inner = gate.geometry.volumes.BoxVolume(  # type: ignore
-        name=f"CollimatorBox_inner_{id + 1}"
+    inner = gate.geometry.volumes.BoxVolume(  # type: ignore
+        name=f"{name}_inner"
     )
+    outer.size = outer_size_mm
+    inner.size = inner_size_mm
+    return subtract_volumes(
+        outer,
+        inner,
+        translation=inner_translation_mm or [0, 0, 0],
+    )
+
+
+def construct_collimator_boolean_gate_geometry(config: dict, id: int):
+    body_name = f"CollimatorBody_{id + 1}"
+    guide_name = f"CollimatorGuide_{id + 1}"
+
+    collimator_body_shell, collimator_body_cavity = _make_shell_trd(
+        name=body_name,
+        top_mm=config["collimator_body_outer_top_mm_np"][id],
+        bottom_mm=config["collimator_body_outer_bottom_mm_np"][id],
+        length_mm=config["collimator_body_length_mm_np"][id],
+    )
+
     box_outer_size_mm = np.full(
         (3,),
         config["collimator_body_outer_top_mm_np"][id]
         + 2.0
         + config["collimator_wall_thickness_mm"] * 2.0,
     )
-    # add 2 mm to ensure the box fully covers the crystal
     box_outer_size_mm[2] = config["detector_crystal_size_mm"][2] + 4.0
     box_inner_size_mm = np.full(
         (3,), config["collimator_body_outer_top_mm_np"][id] + 2.0
     )
 
     box_inner_size_mm[2] = config["detector_crystal_size_mm"][2] + 4.0
-    collimator_box_outer.size = box_outer_size_mm
-    collimator_box_inner.size = box_inner_size_mm
-    collimator_box = subtract_volumes(
-        collimator_box_outer,
-        collimator_box_inner,
-        translation=[0, 0, -2.0],
+    collimator_box_shell = _make_shell_box(
+        name=f"CollimatorBox_{id + 1}",
+        outer_size_mm=box_outer_size_mm,
+        inner_size_mm=box_inner_size_mm,
+        inner_translation_mm=[0, 0, -2.0],
     )
 
-    # unite the box with the collimator body
     collimator_body_step_1 = unite_volumes(
-        collimator_body_outer,
-        collimator_box,
+        collimator_body_shell,
+        collimator_box_shell,
         translation=[
             0,
             0,
@@ -492,27 +521,14 @@ def construct_collimator_box_gate_geometry(config: dict, id: int):
         new_name=f"CollimatorBody_step1_{id + 1}",
     )
 
-    collimator_body = subtract_volumes(collimator_body_step_1, collimator_body_inner)
-    # Collimator Guide
-    collimator_guide_inner = gate.geometry.volumes.TrdVolume(  # type: ignore
-        name=f"CollimatorGuide_{id + 1}"
+    collimator_body = subtract_volumes(collimator_body_step_1, collimator_body_cavity)
+    collimator_guide_shell, collimator_guide_cavity = _make_shell_trd(
+        name=guide_name,
+        top_mm=config["collimator_guide_outer_top_mm_np"][id],
+        bottom_mm=config["collimator_guide_outer_bottom_mm_np"][id],
+        length_mm=config["collimator_guide_length_mm_np"][id],
     )
-    collimator_guide_outer = gate.geometry.volumes.TrdVolume(  # type: ignore
-        name=f"CollimatorGuide_outer_{id + 1}"
-    )
-    collimator_guide_outer.dx1 = config["collimator_guide_outer_top_mm_np"][id] * 0.5
-    collimator_guide_outer.dy1 = config["collimator_guide_outer_top_mm_np"][id] * 0.5
-    collimator_guide_outer.dx2 = config["collimator_guide_outer_bottom_mm_np"][id] * 0.5
-    collimator_guide_outer.dy2 = config["collimator_guide_outer_bottom_mm_np"][id] * 0.5
-    collimator_guide_outer.dz = config["collimator_guide_length_mm_np"][id] * 0.5
-    collimator_guide_inner.dx1 = config["collimator_guide_inner_top_mm_np"][id] * 0.5
-    collimator_guide_inner.dy1 = config["collimator_guide_inner_top_mm_np"][id] * 0.5
-    collimator_guide_inner.dx2 = config["collimator_guide_inner_bottom_mm_np"][id] * 0.5
-    collimator_guide_inner.dy2 = config["collimator_guide_inner_bottom_mm_np"][id] * 0.5
-    collimator_guide_inner.dz = (
-        config["collimator_guide_length_mm_np"][id] * 0.5 + 0.1
-    )  # add a small extra length to ensure the subtraction works correctly
-    collimator_guide = subtract_volumes(collimator_guide_outer, collimator_guide_inner)
+    collimator_guide = subtract_volumes(collimator_guide_shell, collimator_guide_cavity)
 
     collimator = unite_volumes(
         collimator_body,
@@ -547,7 +563,7 @@ def get_head_rotation_matrix(config: dict, id: int):
 
 
 def add_collimator_to_gate_sim(sim: gate.Simulation, config: dict, id: int):
-    collimator = construct_collimator_box_gate_geometry(config, id)
+    collimator = construct_collimator_boolean_gate_geometry(config, id)
     sim.volume_manager.add_volume(collimator)
     collimator.mother = "world"
     collimator.translation = config["collimator_body_translation_mm"][id]
@@ -680,7 +696,7 @@ def save_geometry_to_wrl(
         print("Storing scanner geometry to WRL without running the simulation...")
         _finalize_wrl_export(
             sim,
-            wrl_output_dir / "dc_spect_geometry_2mm_box.wrl",
+            wrl_output_dir / "dc_spect_boolean_geometry.wrl",
         )
         return
 

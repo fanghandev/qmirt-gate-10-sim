@@ -1,4 +1,4 @@
-executable = wrapper_batch.sh
+executable = wrapper_cardiac_spect_sim_batch.sh
 arguments = $(ClusterId) $(ProcId)
 
 +SingularityImage = "osdf:///ospool/ap40/data/fang.han/qmirt-gate-10-sim.sif"
@@ -17,4 +17,4 @@ request_cpus = 1
 request_memory = 2GB
 request_disk = 5GB
 
-queue 10000
+queue 100
