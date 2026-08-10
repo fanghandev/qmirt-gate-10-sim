@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Combine per-crystal sparse SRM chunk outputs into final per-crystal files."""
+"""Combine sparse SRM chunk outputs into one global 5D sparse file."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -14,129 +13,169 @@ import numpy as np
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Combine sparse per-crystal SRM chunks into final outputs."
+        description="Combine sparse SRM chunks into one 5D sparse output."
     )
     parser.add_argument(
         "--input-dir",
         type=Path,
         required=True,
-        help="Directory containing per-job subdirectories with crystal NPZ files.",
+        help="Directory containing sparse NPZ chunk files.",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
         required=True,
-        help="Directory where final per-crystal sparse outputs are written.",
+        help="Directory where the combined sparse output is written.",
     )
     return parser.parse_args()
 
 
-def extract_crystal_id(path: Path, data: dict[str, np.ndarray]) -> int:
-    if "crystal_id" in data:
-        return int(np.asarray(data["crystal_id"]).reshape(-1)[0])
-    match = re.search(r"crystal_(\d+)", path.name)
-    if match:
-        return int(match.group(1))
-    raise ValueError(f"Could not infer crystal ID from {path}")
-
-
-def load_chunk_summaries(input_dir: Path) -> list[dict[str, object]]:
-    summaries: list[dict[str, object]] = []
-    for summary_path in sorted(input_dir.rglob("chunk_summary.json")):
-        summaries.append(json.loads(summary_path.read_text()))
-    return summaries
+def read_scalar(data: np.lib.npyio.NpzFile, key: str, default: float | int) -> float | int:
+    value = data.get(key, np.array([default]))
+    return np.asarray(value).reshape(-1)[0].item()
 
 
 def combine_crystal_npz_files(
     input_dir: Path,
-) -> dict[int, dict[tuple[int, int, int, int], int]]:
-    combined: dict[int, dict[tuple[int, int, int, int], int]] = defaultdict(dict)
-    for npz_path in sorted(input_dir.rglob("crystal_*.npz")):
-        data = np.load(npz_path)
-        crystal_id = extract_crystal_id(npz_path, data)
-        coords = np.asarray(data["coords"], dtype=np.int32)
-        counts = np.asarray(data["counts"], dtype=np.int64)
+) -> tuple[
+    dict[tuple[int, int, int, int, int], int],
+    dict[str, object],
+    list[str],
+    int,
+    float,
+    int,
+    int,
+]:
+    combined: dict[tuple[int, int, int, int, int], int] = defaultdict(int)
+    source_files: list[str] = []
+    reference_metadata: dict[str, object] | None = None
+    total_events = 0
+    total_sim_time = 0.0
+    total_files = 0
+    total_root_members = 0
 
-        crystal_store = combined[crystal_id]
-        for coord, count in zip(coords, counts):
-            key = tuple(int(value) for value in coord)
-            crystal_store[key] = crystal_store.get(key, 0) + int(count)
+    npz_paths = sorted(
+        path
+        for path in input_dir.rglob("*.npz")
+        if path.name.endswith("_sparse_5d_histograms.npz")
+    )
+    if not npz_paths:
+        raise FileNotFoundError(f"No sparse NPZ files found in {input_dir}")
 
-    return combined
+    for npz_path in npz_paths:
+        with np.load(npz_path, allow_pickle=False) as data:
+            coords = np.asarray(data["coords"], dtype=np.int32)
+            counts = np.asarray(data["counts"], dtype=np.int64)
 
+            if coords.ndim != 2 or coords.shape[1] != 5:
+                raise ValueError(f"Expected coords to have shape (N, 5), got {coords.shape!r}")
+            if coords.shape[0] != counts.shape[0]:
+                raise ValueError("coords and counts must have the same number of rows")
 
-def save_final_crystal_file(
+            for coord, count in zip(coords, counts):
+                key = (
+                    int(coord[0]),
+                    int(coord[1]),
+                    int(coord[2]),
+                    int(coord[3]),
+                    int(coord[4]),
+                )
+                combined[key] += int(count)
+
+            file_metadata = {
+                "hist_bins": int(read_scalar(data, "hist_bins", 80)),
+                "hist_range": np.asarray(data.get("hist_range", np.array([-80.0, 80.0]))).reshape(-1).tolist(),
+                "energy_min": float(read_scalar(data, "energy_min", 0.0)),
+                "energy_max": float(read_scalar(data, "energy_max", 0.0)),
+            }
+            if reference_metadata is None:
+                reference_metadata = file_metadata
+
+            total_events += int(read_scalar(data, "total_events", 0))
+            total_sim_time += float(read_scalar(data, "total_sim_time", 0.0))
+            total_files += int(read_scalar(data, "file_count", 1))
+            total_root_members += int(read_scalar(data, "processed_root_members", 0))
+
+            source_files.append(str(npz_path))
+
+    assert reference_metadata is not None
+    return (
+        combined,
+        reference_metadata,
+        source_files,
+        total_events,
+        total_sim_time,
+        total_files,
+        total_root_members,
+    )
+
+def save_combined_sparse_file(
     output_dir: Path,
-    crystal_id: int,
-    coord_map: dict[tuple[int, int, int, int], int],
-    summary: dict[str, object],
+    coord_map: dict[tuple[int, int, int, int, int], int],
+    metadata: dict[str, object],
+    total_events: int,
+    total_sim_time: float,
+    file_count: int,
+    processed_root_members: int,
+    source_files: list[str],
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     coords = np.array(list(coord_map.keys()), dtype=np.int32)
     counts = np.array(list(coord_map.values()), dtype=np.int64)
-    output_path = output_dir / f"crystal_{crystal_id:03d}_srm.npz"
+    output_path = output_dir / "sparse_5d_histograms.npz"
     np.savez_compressed(
         output_path,
-        crystal_id=np.array([crystal_id], dtype=np.int32),
         coords=coords,
         counts=counts,
-        hist_bins=np.array([summary.get("hist_bins", 80)], dtype=np.int32),
-        hist_range=np.array(summary.get("hist_range", [-80.0, 80.0]), dtype=np.float32),
-        energy_min=np.array([summary.get("energy_min", 0.0)], dtype=np.float32),
-        energy_max=np.array([summary.get("energy_max", 0.0)], dtype=np.float32),
-        total_events=np.array([summary["total_events"]], dtype=np.int64),
-        total_sim_time=np.array([summary["total_sim_time"]], dtype=np.float64),
+        hist_bins=np.array([metadata.get("hist_bins", 80)], dtype=np.int32),
+        hist_range=np.array(metadata.get("hist_range", [-80.0, 80.0]), dtype=np.float32),
+        energy_min=np.array([metadata.get("energy_min", 0.0)], dtype=np.float32),
+        energy_max=np.array([metadata.get("energy_max", 0.0)], dtype=np.float32),
+        file_count=np.array([file_count], dtype=np.int64),
+        total_events=np.array([total_events], dtype=np.int64),
+        total_sim_time=np.array([total_sim_time], dtype=np.float64),
+        processed_root_members=np.array([processed_root_members], dtype=np.int64),
+        crystal_count=np.array([len(np.unique(coords[:, 0]))], dtype=np.int64),
         accumulated_counts=np.array([int(counts.sum())], dtype=np.int64),
+        source_files=np.array(source_files, dtype=str),
     )
     return output_path
 
 
 def main() -> int:
     args = parse_args()
-    chunk_summaries = load_chunk_summaries(args.input_dir)
-    combined = combine_crystal_npz_files(args.input_dir)
+    (
+        combined,
+        metadata,
+        source_files,
+        total_events,
+        total_sim_time,
+        total_files,
+        total_root_members,
+    ) = combine_crystal_npz_files(args.input_dir)
 
-    total_events = int(sum(int(summary["total_events"]) for summary in chunk_summaries))
-    total_sim_time = float(
-        sum(float(summary["total_sim_time"]) for summary in chunk_summaries)
+    output_path = save_combined_sparse_file(
+        args.output_dir,
+        combined,
+        metadata,
+        total_events,
+        total_sim_time,
+        total_files,
+        total_root_members,
+        source_files,
     )
-    total_files = int(sum(int(summary["file_count"]) for summary in chunk_summaries))
-    total_root_members = int(
-        sum(
-            int(summary.get("processed_root_members", 0)) for summary in chunk_summaries
-        )
-    )
-
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    final_outputs: list[str] = []
-    for crystal_id in sorted(combined):
-        reference_summary = {
-            "total_events": total_events,
-            "total_sim_time": total_sim_time,
-            "hist_bins": 80,
-            "hist_range": [-80.0, 80.0],
-            "energy_min": 0.14 * 0.999,
-            "energy_max": 0.14 * 1.001,
-        }
-        output_path = save_final_crystal_file(
-            args.output_dir,
-            crystal_id,
-            combined[crystal_id],
-            reference_summary,
-        )
-        final_outputs.append(str(output_path))
 
     summary_path = args.output_dir / "combined_summary.json"
     summary_path.write_text(
         json.dumps(
             {
-                "chunk_count": len(chunk_summaries),
+                "chunk_count": len(source_files),
                 "file_count": total_files,
                 "root_member_count": total_root_members,
                 "total_events": total_events,
                 "total_sim_time": total_sim_time,
-                "crystal_count": len(final_outputs),
-                "outputs": final_outputs,
+                "crystal_count": len({coord[0] for coord in combined}),
+                "outputs": [str(output_path)],
             },
             indent=2,
             sort_keys=True,
@@ -145,7 +184,7 @@ def main() -> int:
     )
 
     print(
-        f"Combined {len(chunk_summaries)} chunks into {len(final_outputs)} crystal outputs"
+        f"Combined {len(source_files)} sparse chunks into {output_path}"
     )
     print(f"Total events: {total_events:,d}")
     print(f"Total simulation time: {total_sim_time:.2f} seconds")

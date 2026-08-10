@@ -1,35 +1,22 @@
 #!/usr/bin/env python3
-"""Process a slice of OSPool files into per-crystal sparse SRM chunks.
+"""Process a slice of OSPool files into one sparse SRM NPZ.
 
 This worker reads a shared file list, processes a contiguous slice of entries,
-and writes one sparse NPZ per crystal plus a chunk summary JSON. The per-crystal
-NPZ stores sparse coordinates as ``(PixelID, x_bin, y_bin, z_bin)`` so the
-crystal identity can live in the filename / directory layout instead of in the
-coordinate payload.
+and writes one sparse NPZ containing 5D sparse coordinates as
+``(CrystalID, PixelID, x_bin, y_bin, z_bin)`` plus the associated counts and
+metadata.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import re
 import tarfile
 from collections import defaultdict
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import polars as pl
 import uproot
-
-
-@dataclass(frozen=True)
-class ChunkSummary:
-    file_count: int
-    total_events: int
-    total_sim_time: float
-    crystal_count: int
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -45,7 +32,7 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         required=True,
-        help="Directory where per-crystal chunk outputs will be written.",
+        help="Directory where the sparse NPZ output will be written.",
     )
     parser.add_argument(
         "--start-index",
@@ -68,13 +55,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--energy-min",
         type=float,
-        default=0.14 * 0.999,
+        default=0.14 * 0.995,
         help="Lower energy threshold in MeV.",
     )
     parser.add_argument(
         "--energy-max",
         type=float,
-        default=0.14 * 1.001,
+        default=0.14 * 1.005,
         help="Upper energy threshold in MeV.",
     )
     parser.add_argument(
@@ -95,15 +82,6 @@ def parse_args() -> argparse.Namespace:
         default=140,
         help="Number of bins per axis.",
     )
-    parser.add_argument(
-        "--crystal-id-regex",
-        type=str,
-        default=r"_a_(\d+)_j_",
-        help=(
-            "Regular expression with one capture group that extracts the crystal ID "
-            "from a ROOT member name or archive stem."
-        ),
-    )
     return parser.parse_args()
 
 
@@ -118,6 +96,7 @@ def load_file_paths(
     return file_paths[start_index:end_index]
 
 
+<<<<<<< HEAD
 def extract_crystal_id(text: str, pattern: str) -> int | None:
     match = re.search(pattern, text)
     if match:
@@ -129,6 +108,9 @@ def extract_crystal_id(text: str, pattern: str) -> int | None:
 
 
 def parse_stats_member(member_file) -> tuple[float, float]:
+=======
+def parse_stats_member(member_file) -> tuple[int, float]:
+>>>>>>> 2eaf7ed (update srm extraction job scripts)
     text_content = member_file.read().decode("utf-8")
     stats_dict = json.loads(text_content)
     total_events = float(stats_dict["events"]["value"])
@@ -138,50 +120,49 @@ def parse_stats_member(member_file) -> tuple[float, float]:
     return total_events, total_sim_time
 
 
+def extract_crystal_and_pixel_ids(
+    unique_volume_ids: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    crystal_ids = []
+    pixel_ids = []
+    for value in unique_volume_ids:
+        if isinstance(value, bytes):
+            text = value.decode("utf-8")
+        else:
+            text = str(value)
+
+        parts = text.split("_")
+        if len(parts) < 2:
+            raise ValueError(f"Could not parse crystal/pixel IDs from {text!r}")
+
+        crystal_ids.append(int(parts[1])-1)  # Convert to 0-based index
+        pixel_ids.append(int(parts[-1]))
+
+    return (
+        np.asarray(crystal_ids, dtype=np.int32),
+        np.asarray(pixel_ids, dtype=np.int32),
+    )
+
+
 def accumulate_sparse(
-    sparse_store: dict[int, defaultdict[tuple[int, int, int, int], int]],
-    crystal_id: int,
+    sparse_store: defaultdict[tuple[int, int, int, int, int], int],
+    crystal_ids: np.ndarray,
     pixel_ids: np.ndarray,
     x_bin: np.ndarray,
     y_bin: np.ndarray,
     z_bin: np.ndarray,
 ) -> None:
-    coords = np.column_stack((pixel_ids, x_bin, y_bin, z_bin))
+    coords = np.column_stack((crystal_ids, pixel_ids, x_bin, y_bin, z_bin))
     unique_coords, counts = np.unique(coords, axis=0, return_counts=True)
-    crystal_store = sparse_store[crystal_id]
     for coord, count in zip(unique_coords, counts):
-        crystal_store[tuple(int(value) for value in coord)] += int(count)
-
-
-def save_crystal_chunk(
-    output_dir: Path,
-    job_tag: str,
-    crystal_id: int,
-    coord_map: defaultdict[tuple[int, int, int, int], int],
-    hist_bins: int,
-    hist_min: float,
-    hist_max: float,
-    energy_min: float,
-    energy_max: float,
-) -> Path:
-    crystal_dir = output_dir / job_tag
-    crystal_dir.mkdir(parents=True, exist_ok=True)
-
-    coords = np.array(list(coord_map.keys()), dtype=np.int32)
-    counts = np.array(list(coord_map.values()), dtype=np.int64)
-    output_path = crystal_dir / f"crystal_{crystal_id:03d}.npz"
-    np.savez_compressed(
-        output_path,
-        crystal_id=np.array([crystal_id], dtype=np.int32),
-        coords=coords,
-        counts=counts,
-        hist_bins=np.array([hist_bins], dtype=np.int32),
-        hist_range=np.array([hist_min, hist_max], dtype=np.float32),
-        energy_min=np.array([energy_min], dtype=np.float32),
-        energy_max=np.array([energy_max], dtype=np.float32),
-        accumulated_counts=np.array([int(counts.sum())], dtype=np.int64),
-    )
-    return output_path
+        coord_key = (
+            int(coord[0]),
+            int(coord[1]),
+            int(coord[2]),
+            int(coord[3]),
+            int(coord[4]),
+        )
+        sparse_store[coord_key] += int(count)
 
 
 def main() -> int:
@@ -191,9 +172,7 @@ def main() -> int:
         raise FileNotFoundError("The selected file-list slice is empty.")
 
     hist_width = (args.hist_max - args.hist_min) / args.hist_bins
-    sparse_store: dict[int, defaultdict[tuple[int, int, int, int], int]] = defaultdict(
-        lambda: defaultdict(int)
-    )
+    sparse_store: defaultdict[tuple[int, int, int, int, int], int] = defaultdict(int)
     total_events = 0
     total_sim_time = 0.0
     processed_files = 0
@@ -221,10 +200,6 @@ def main() -> int:
             open(archive_path, "rb") as file_obj,
             tarfile.open(fileobj=file_obj, mode="r:gz") as tar,
         ):
-            archive_crystal_id = extract_crystal_id(
-                archive_path.stem, args.crystal_id_regex
-            )
-
             for member in tar:
                 if not member.isfile():
                     continue
@@ -245,14 +220,6 @@ def main() -> int:
                 if extracted_root_file is None:
                     continue
 
-                crystal_id = extract_crystal_id(member_name, args.crystal_id_regex)
-                if crystal_id is None:
-                    crystal_id = archive_crystal_id
-                if crystal_id is None:
-                    raise ValueError(
-                        f"Could not infer a crystal ID from {archive_path.name} / {member_name}."
-                    )
-
                 processed_members += 1
                 with uproot.open(extracted_root_file) as root_file:
                     tree_names = [
@@ -269,25 +236,21 @@ def main() -> int:
                             continue
 
                         data = tree.arrays(branches, library="np")
-                        df = pl.DataFrame(data).with_columns(
-                            pl.col("PreStepUniqueVolumeID")
-                            .str.split("_")
-                            .list.get(-1)
-                            .cast(pl.Int32)
-                            .alias("PixelID"),
+                        energy = np.asarray(data["TotalEnergyDeposit"])
+                        energy_mask = (energy >= args.energy_min) & (
+                            energy <= args.energy_max
                         )
-
-                        df = df.filter(
-                            (pl.col("TotalEnergyDeposit") >= args.energy_min)
-                            & (pl.col("TotalEnergyDeposit") <= args.energy_max)
-                        )
-                        if df.is_empty():
+                        if not np.any(energy_mask):
                             continue
 
-                        event_x = df["EventPosition_X"].to_numpy()
-                        event_y = df["EventPosition_Y"].to_numpy()
-                        event_z = df["EventPosition_Z"].to_numpy()
-                        pixel_ids = df["PixelID"].to_numpy().astype(np.int32)
+                        event_x = np.asarray(data["EventPosition_X"])[energy_mask]
+                        event_y = np.asarray(data["EventPosition_Y"])[energy_mask]
+                        event_z = np.asarray(data["EventPosition_Z"])[energy_mask]
+                        crystal_ids, pixel_ids = extract_crystal_and_pixel_ids(
+                            np.asarray(data["PreStepUniqueVolumeID"])
+                        )
+                        crystal_ids = crystal_ids[energy_mask]
+                        pixel_ids = pixel_ids[energy_mask]
 
                         valid_mask = (
                             (event_x >= args.hist_min)
@@ -303,6 +266,7 @@ def main() -> int:
                         event_x = event_x[valid_mask]
                         event_y = event_y[valid_mask]
                         event_z = event_z[valid_mask]
+                        crystal_ids = crystal_ids[valid_mask]
                         pixel_ids = pixel_ids[valid_mask]
 
                         x_bin = np.floor((event_x - args.hist_min) / hist_width).astype(
@@ -317,7 +281,7 @@ def main() -> int:
 
                         accumulate_sparse(
                             sparse_store,
-                            crystal_id,
+                            crystal_ids,
                             pixel_ids,
                             x_bin,
                             y_bin,
@@ -325,49 +289,28 @@ def main() -> int:
                         )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    crystal_outputs: list[str] = []
-    for crystal_id in sorted(sparse_store):
-        output_path = save_crystal_chunk(
-            args.output_dir,
-            job_tag,
-            crystal_id,
-            sparse_store[crystal_id],
-            args.hist_bins,
-            args.hist_min,
-            args.hist_max,
-            args.energy_min,
-            args.energy_max,
-        )
-        crystal_outputs.append(str(output_path))
-
-    summary = ChunkSummary(
-        file_count=processed_files,
-        total_events=total_events,
-        total_sim_time=total_sim_time,
-        crystal_count=len(crystal_outputs),
-    )
-    summary_path = args.output_dir / job_tag / "chunk_summary.json"
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
-    summary_path.write_text(
-        json.dumps(
-            {
-                "job_tag": job_tag,
-                "file_count": summary.file_count,
-                "total_events": summary.total_events,
-                "total_sim_time": summary.total_sim_time,
-                "crystal_count": summary.crystal_count,
-                "processed_root_members": processed_members,
-                "crystal_outputs": crystal_outputs,
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n"
+    coords = np.array(list(sparse_store.keys()), dtype=np.int32)
+    counts = np.array(list(sparse_store.values()), dtype=np.int64)
+    output_path = args.output_dir / f"{job_tag}_sparse_5d_srm.npz"
+    np.savez_compressed(
+        output_path,
+        coords=coords,
+        counts=counts,
+        hist_bins=np.array([args.hist_bins], dtype=np.int32),
+        hist_range=np.array([args.hist_min, args.hist_max], dtype=np.float32),
+        energy_min=np.array([args.energy_min], dtype=np.float32),
+        energy_max=np.array([args.energy_max], dtype=np.float32),
+        file_count=np.array([processed_files], dtype=np.int64),
+        total_events=np.array([total_events], dtype=np.int64),
+        total_sim_time=np.array([total_sim_time], dtype=np.float64),
+        processed_root_members=np.array([processed_members], dtype=np.int64),
+        job_tag=np.array([job_tag]),
+        accumulated_counts=np.array([int(counts.sum())], dtype=np.int64),
     )
 
     print(
         f"Processed {processed_files} archives, {processed_members} ROOT members, "
-        f"and {len(crystal_outputs)} crystals into {summary_path.parent}"
+        f"and wrote {len(counts)} sparse bins to {output_path}"
     )
     return 0
 

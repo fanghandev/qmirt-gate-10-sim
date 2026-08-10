@@ -1,15 +1,15 @@
 executable = wrapper_sparse_combine.sh
 arguments = $(input_dir) $(output_dir)
 
-+SingularityImage = "/cvmfs/singularity.opensciencegrid.org/htc/ubuntu:24.04"
-transfer_input_files = ../payload, ../persistent_data, ../qmirt, requirements_sparse.txt
++SingularityImage = "osdf:///ospool/ap40/data/fang.han/qmirt-gate-10-sim.sif"
+transfer_input_files = ../payload, ../persistent_data, ../qmirt, $(input_files)
 
 log = $(log_dir)/combine_sparse_$(ClusterId).log
 output = $(log_dir)/combine_sparse_$(ClusterId).out
 error = $(log_dir)/combine_sparse_$(ClusterId).err
 
-transfer_output_files = sparse_srm_final.tar.gz
-transfer_output_remaps = "sparse_srm_final.tar.gz = $(output_dir)/sparse_srm_final.tar.gz"
+transfer_output_files = combined_sparse_5d_srm.npz
+transfer_output_remaps = "combined_sparse_5d_srm.npz = $(output_dir)/combined_sparse_5d_srm.npz"
 
 request_cpus = 1
 request_memory = 2GB

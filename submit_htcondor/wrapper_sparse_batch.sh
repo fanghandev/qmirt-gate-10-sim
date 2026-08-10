@@ -5,30 +5,29 @@ CLUSTER_ID=$1
 PROC_ID=$2
 
 export PYTHONPATH=$PWD/qmirt:$PYTHONPATH
-export PIP_DISABLE_PIP_VERSION_CHECK=1
 
-if [ ! -x .venv/bin/python ]; then
-    python3 -m venv .venv
-fi
-. .venv/bin/activate
-python -m pip install --no-input -r requirements_sparse.txt
-
-FILE_LIST="filenames.txt"
-OUTPUT_DIR="sparse_srm_chunks_${CLUSTER_ID}"
-FILES_PER_JOB=100
-START_INDEX=$((PROC_ID * FILES_PER_JOB))
-END_INDEX=$((START_INDEX + FILES_PER_JOB))
+OUTPUT_DIR="."
+LOCAL_FILE_LIST="sparse_input_files_${CLUSTER_ID}_${PROC_ID}.txt"
 
 mkdir -p "$OUTPUT_DIR"
 
 echo "Starting sparse worker job ${CLUSTER_ID} task ${PROC_ID}"
-echo "File slice: ${START_INDEX}..${END_INDEX}"
+
+: > "$LOCAL_FILE_LIST"
+for archive_path in ./*.tar.gz; do
+    [ -e "$archive_path" ] || continue
+    printf '%s\n' "$(basename "$archive_path")" >> "$LOCAL_FILE_LIST"
+done
+
+if [[ ! -s "$LOCAL_FILE_LIST" ]]; then
+    echo "No staged tar.gz inputs found for job ${CLUSTER_ID}.${PROC_ID}"
+    exit 1
+fi
 
 python3 payload/python/ospool_sparse_srm_worker.py \
-    --input-list "$FILE_LIST" \
+    --input-list "$LOCAL_FILE_LIST" \
     --output-dir "$OUTPUT_DIR" \
-    --start-index "$START_INDEX" \
-    --end-index "$END_INDEX" \
-    --job-tag "job_${CLUSTER_ID}_${PROC_ID}"
+    --job-tag "job_${CLUSTER_ID}_${PROC_ID}" \
+    --hist-min -105 --hist-max 105 --hist-bins 210
 
-tar -czf "sparse_srm_chunks_${CLUSTER_ID}_${PROC_ID}.tar.gz" -C "$OUTPUT_DIR" "job_${CLUSTER_ID}_${PROC_ID}"
+echo "Worker output written to $OUTPUT_DIR/job_${CLUSTER_ID}_${PROC_ID}_sparse_5d_srm.npz"

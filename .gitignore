@@ -229,3 +229,5 @@ results/**/*.png
 a_local_j_*_sim_stats.txt
 *.npz
 results/cardiac_spect/data
+**/sparse_input_lists
+**/filenames.txt
