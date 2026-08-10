@@ -80,19 +80,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--hist-min",
         type=float,
-        default=-80.0,
+        default=-105.0,
         help="Lower bound for the histogram window in mm.",
     )
     parser.add_argument(
         "--hist-max",
         type=float,
-        default=80.0,
+        default=105.0,
         help="Upper bound for the histogram window in mm.",
     )
     parser.add_argument(
         "--hist-bins",
         type=int,
-        default=80,
+        default=140,
         help="Number of bins per axis.",
     )
     parser.add_argument(
@@ -128,10 +128,10 @@ def extract_crystal_id(text: str, pattern: str) -> int | None:
     return None
 
 
-def parse_stats_member(member_file) -> tuple[int, float]:
+def parse_stats_member(member_file) -> tuple[float, float]:
     text_content = member_file.read().decode("utf-8")
     stats_dict = json.loads(text_content)
-    total_events = int(float(stats_dict["events"]["value"]))
+    total_events = float(stats_dict["events"]["value"])
     total_sim_time = float(stats_dict["sim_stop_time"]["value"]) - float(
         stats_dict["sim_start_time"]["value"]
     )

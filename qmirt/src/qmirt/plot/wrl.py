@@ -318,19 +318,19 @@ def plot_meshes(
             }
 
     grouped = {
-        key: dict(
-            x=[],
-            y=[],
-            z=[],
-            i=[],
-            j=[],
-            k=[],
-            edge_x=[],
-            edge_y=[],
-            edge_z=[],
-            offset=0,
-        )
-        for key in styles.keys()
+        key: {
+            "x": [],
+            "y": [],
+            "z": [],
+            "i": [],
+            "j": [],
+            "k": [],
+            "edge_x": [],
+            "edge_y": [],
+            "edge_z": [],
+            "offset": 0,
+        }
+        for key in styles
     }
 
     selected_meshes = [mesh for mesh in filtered_meshes if str(mesh["name"]) in styles]
@@ -396,7 +396,7 @@ def plot_meshes(
                     name="Edges",
                     legendgroup=legend_group,
                     showlegend=True,
-                    line=dict(color=style["edge_color"], width=2),
+                    line={"color": style["edge_color"], "width": 2},
                     hoverinfo="skip",
                 )
             )
@@ -428,14 +428,14 @@ def plot_wrl_file(
     )
     fig.update_layout(
         title=title,
-        scene=dict(
-            xaxis_title="X (mm)",
-            yaxis_title="Y (mm)",
-            zaxis_title="Z (mm)",
-            aspectmode="data",
-            camera=dict(eye=dict(x=1.5, y=1.5, z=1.5)),
-        ),
-        legend=dict(itemsizing="constant"),
-        margin=dict(l=0, r=0, t=50, b=0),
+        scene={
+            "xaxis": {"title": "X (mm)"},
+            "yaxis": {"title": "Y (mm)"},
+            "zaxis": {"title": "Z (mm)"},
+            "aspectmode": "data",
+            "camera": {"eye": {"x": 1.5, "y": 1.5, "z": 1.5}},
+        },
+        legend={"itemsizing": "constant"},
+        margin={"l": 0, "r": 0, "t": 50, "b": 0},
     )
     return fig
