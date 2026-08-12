@@ -30,7 +30,7 @@ mkdir -p "$OUT_DIR"
 echo "Starting job $CLUSTER_ID task $PROC_ID..."
 
 # Optimized for 500 million primaries (safely under the 12-hour eviction window)
-python3 "payload/python/gate_sim_cardiac_spect_no_boolean_geometry.py" \
+python3 "payload/python/gate_sim_cardiac_spect_no_boolean.py" \
     -o "$OUT_DIR" \
     -j "$CLUSTER_ID" \
     -k "$PROC_ID" \
