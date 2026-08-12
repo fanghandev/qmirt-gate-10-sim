@@ -159,78 +159,32 @@ def add_background_source(
     *,
     phantom_name: str = "Jaszczak_Phantom",
 ):
-    """
-    Adds a background radioactive source to the specified phantom volume.
-    Leverages GATE's 'confine' feature combined with the CSG mother-daughter
-    hierarchy to automatically exclude radioactive emissions from the cold rods and spheres.
-
-    Args:
-        sim: The opengate simulation object.
-        phantom_name: Name of the mother volume (water cylinder).
-        args: Command-line arguments containing source type and activity.
-    """
-    # ========================================================
-    # Add Background Radioactive Source
-    # ========================================================
-    source_type = args.source_type
-    source = sim.add_source("GenericSource", f"{source_type}_Background")
-
-    # 1. Particle Type Definition based on selected source type
-    if source_type.upper() == "GAMMA-140":
-        # Pure 140 keV monoenergetic gamma (Fastest simulation speed)
-        # Skips all atomic de-excitations, X-rays, and Auger electrons.
-        # Note: True Tc-99m photopeak is 140.5 keV, adjusted to 140.0 keV per request.
-        source.particle = "gamma"
-        source.energy.type = "mono"
-        source.energy.mono = 140.0 * gate.g4_units.keV
-
-    elif source_type.upper() == "TC-99M":
-        # Full Tc-99m metastable decay cascade.
-        # Simulates the isomeric transition including internal conversion and X-rays.
-        # GATE/Geant4 requires specifying the excitation energy (142.6836 keV)
-        # to correctly identify the metastable state (Tc-99m) instead of the ground state (Tc-99).
-        source.particle = "ion 43 99"
-        # source.energy.type = "mono"
-        # source.energy.mono = 0 * gate.keV
-        # Depending on the specific opengate-python version, excitation energy for isomers
-        # is typically passed via the ion property or appending to the string.
-        # e.g., source.particle = 'ion 43 99 0 142.6836' (Z, A, Q, E_ex in keV)
-        source.particle = "ion 43 99 0 142.6836"
-
-    elif source_type.upper() == "CO-57":
-        # Cobalt-57 full radioactive decay (Z=27, A=57)
-        # Includes the 122 keV and 136 keV gammas, plus Fe X-rays.
-        source.particle = "ion 27 57"
-        # source.energy.type = "mono"
-        # source.energy.mono = 0 * gate.g4_units.keV
-
-    else:
+    """Add a monoenergetic gamma source confined to the Jaszczak phantom."""
+    source_type = str(getattr(args, "source_type", "Gamma-140")).upper()
+    if source_type not in {"GAMMA-140", "GAMMA"}:
         raise ValueError(
-            "Unsupported source type. Please choose 'Gamma-140', 'Tc-99m', or 'Co-57'."
+            "Only monoenergetic gamma sources are supported for the cardiac script."
         )
 
-    # 2. Spatial Distribution Setting
-    # Define a cylindrical emission region identical to the main water cavity dimensions
+    source = sim.add_source("GenericSource", "Gamma_Background")
+    source.particle = "gamma"
+    source.energy.type = "mono"
+    source.energy.mono = 140.0 * gate.g4_units.keV
+
     source.position.type = "cylinder"
     source.position.radius = 10.2 * gate.g4_units.cm
     source.position.dz = 18.6 * gate.g4_units.cm
-    source.position.translation = [
-        0,
-        0,
-        0,
-    ]  # Aligned with the center of the phantom cavity
-
-    # 3. Core Constraint: Cold Spot Exclusion
-    # Strictly confine photon emission to the volume physically named by 'phantom_name'.
-    # Due to the mother-daughter CSG hierarchy, daughters (acrylic rods/spheres) are excluded automatically.
+    source.position.translation = [0, 0, 0]
     source.position.confine = phantom_name
 
-    # 4. Activity Setting
-    source.activity = (
-        _parse_activity_to_bq(args.source_activity) * gate.g4_units.Bq
-    )  # Convert to Bq for GATE
+    source_activity_bq = getattr(args, "source_activity_bq", None)
+    if source_activity_bq is None and hasattr(args, "source_activity"):
+        source_activity_bq = _parse_activity_to_bq(args.source_activity)
+    if source_activity_bq is None:
+        raise ValueError("A positive source activity is required.")
+    source.activity = source_activity_bq * gate.g4_units.Bq
     print(
-        f"Background source '{source_type}' added to '{phantom_name}' with activity {source.activity:.2e} Bq."
+        f"Background gamma source added to '{phantom_name}' with activity {source.activity:.2e} Bq."
     )
     return source
 
@@ -432,10 +386,11 @@ def get_dc_spect_geometry_config(
 def _make_shell_trd(
     *,
     name: str,
-    top_mm: float,
-    bottom_mm: float,
+    top_outer_mm: float,
+    bottom_outer_mm: float,
+    top_inner_mm: float,
+    bottom_inner_mm: float,
     length_mm: float,
-    extra_length_mm: float = 0.1,
 ):
     outer = gate.geometry.volumes.TrdVolume(  # type: ignore
         name=f"{name}_outer"
@@ -443,16 +398,18 @@ def _make_shell_trd(
     inner = gate.geometry.volumes.TrdVolume(  # type: ignore
         name=name
     )
-    outer.dx1 = top_mm * 0.5
-    outer.dy1 = top_mm * 0.5
-    outer.dx2 = bottom_mm * 0.5
-    outer.dy2 = bottom_mm * 0.5
+    # Keep the same top/bottom convention as qmirt.utils.simulation.make_gate_shell_trd
+    # so the boolean and non-boolean geometries are consistent.
+    outer.dx2 = bottom_outer_mm * 0.5
+    outer.dy2 = bottom_outer_mm * 0.5
+    outer.dx1 = top_outer_mm * 0.5
+    outer.dy1 = top_outer_mm * 0.5
     outer.dz = length_mm * 0.5
-    inner.dx1 = top_mm * 0.5
-    inner.dy1 = top_mm * 0.5
-    inner.dx2 = bottom_mm * 0.5
-    inner.dy2 = bottom_mm * 0.5
-    inner.dz = length_mm * 0.5 + extra_length_mm
+    inner.dx2 = bottom_inner_mm * 0.5
+    inner.dy2 = bottom_inner_mm * 0.5
+    inner.dx1 = top_inner_mm * 0.5
+    inner.dy1 = top_inner_mm * 0.5
+    inner.dz = length_mm * 0.5
     return outer, inner
 
 
@@ -484,8 +441,10 @@ def construct_collimator_boolean_gate_geometry(config: dict, id: int):
 
     collimator_body_shell, collimator_body_cavity = _make_shell_trd(
         name=body_name,
-        top_mm=config["collimator_body_outer_top_mm_np"][id],
-        bottom_mm=config["collimator_body_outer_bottom_mm_np"][id],
+        top_outer_mm=config["collimator_body_outer_top_mm_np"][id],
+        bottom_outer_mm=config["collimator_body_outer_bottom_mm_np"][id],
+        top_inner_mm=config["collimator_body_inner_top_mm_np"][id],
+        bottom_inner_mm=config["collimator_body_inner_bottom_mm_np"][id],
         length_mm=config["collimator_body_length_mm_np"][id],
     )
 
@@ -505,7 +464,7 @@ def construct_collimator_boolean_gate_geometry(config: dict, id: int):
         name=f"CollimatorBox_{id + 1}",
         outer_size_mm=box_outer_size_mm,
         inner_size_mm=box_inner_size_mm,
-        inner_translation_mm=[0, 0, -2.0],
+        inner_translation_mm=[0, 0, 0],
     )
 
     collimator_body_step_1 = unite_volumes(
@@ -515,8 +474,7 @@ def construct_collimator_boolean_gate_geometry(config: dict, id: int):
             0,
             0,
             -config["collimator_body_length_mm_np"][id] * 0.5
-            - box_outer_size_mm[2] * 0.5
-            + 2.0,
+            - box_outer_size_mm[2] * 0.5,
         ],
         new_name=f"CollimatorBody_step1_{id + 1}",
     )
@@ -524,8 +482,10 @@ def construct_collimator_boolean_gate_geometry(config: dict, id: int):
     collimator_body = subtract_volumes(collimator_body_step_1, collimator_body_cavity)
     collimator_guide_shell, collimator_guide_cavity = _make_shell_trd(
         name=guide_name,
-        top_mm=config["collimator_guide_outer_top_mm_np"][id],
-        bottom_mm=config["collimator_guide_outer_bottom_mm_np"][id],
+        top_outer_mm=config["collimator_guide_outer_top_mm_np"][id],
+        bottom_outer_mm=config["collimator_guide_outer_bottom_mm_np"][id],
+        top_inner_mm=config["collimator_guide_inner_top_mm_np"][id],
+        bottom_inner_mm=config["collimator_guide_inner_bottom_mm_np"][id],
         length_mm=config["collimator_guide_length_mm_np"][id],
     )
     collimator_guide = subtract_volumes(collimator_guide_shell, collimator_guide_cavity)
@@ -549,16 +509,16 @@ def get_head_rotation_matrix(config: dict, id: int):
 
     # First rotate around x axis by 90 degrees
     rx_0 = Rotation.from_euler("x", -90, degrees=True).as_matrix()
-    rz_0 = Rotation.from_euler("z", 90, degrees=True).as_matrix()
     # Then rotate around z axis by the azimuthal angle
     rz_1 = Rotation.from_euler(
-        "z", config["azimuthal_angle_deg"][id], degrees=True
+        "z", config["azimuthal_angle_deg"][id] + 90, degrees=True
     ).as_matrix()
-    # Then rotate around y axis by the polar angle
+    # Then rotate around x axis by the polar angle using the same convention
+    # as qmirt.utils.simulation.get_head_rotation_matrix.
     rx_1 = Rotation.from_euler(
         "x", -config["polar_angle_deg"][id], degrees=True
     ).as_matrix()
-    r = rz_1 @ rz_0 @ rx_1 @ rx_0
+    r = rz_1 @ rx_1 @ rx_0
     return r
 
 
@@ -654,15 +614,13 @@ def _finalize_wrl_export(sim: gate.Simulation, visu_filename: Path | str):
     sim.run()
 
 
-def _add_scanner_geometry(
-    sim: gate.Simulation, config: dict, *, include_shielding: bool
-):
+def _add_scanner_geometry(sim: gate.Simulation, config: dict, *, args):
     for i in range(80):
         print(f"Adding geometry for head {i + 1}...")
         add_collimator_to_gate_sim(sim, config, id=i)
         add_pixelated_detector_to_gate_sim(sim, config, id=i)
 
-    if include_shielding:
+    if args.with_shielding:
         add_shielding_to_gate_sim(sim, config)
 
 
@@ -686,12 +644,14 @@ def save_geometry_to_wrl(
     export_target = export_target.lower()
     if export_target not in {"scanner", "phantom", "both"}:
         raise ValueError("export_target must be one of: scanner, phantom, both")
-
-    include_shielding = bool(getattr(args, "with_shielding", False))
-
     if export_target == "scanner":
-        _add_scanner_geometry(sim, config, include_shielding=include_shielding)
+        _add_scanner_geometry(
+            sim,
+            config,
+            args=args,
+        )
         _configure_wrl_export(sim)
+        add_fov_volume_to_gate_sim(sim, shape=args.fov_shape, size_mm=args.fov_size_mm)
         _apply_debug_geometry_settings(sim, args)
         print("Storing scanner geometry to WRL without running the simulation...")
         _finalize_wrl_export(
@@ -703,7 +663,8 @@ def save_geometry_to_wrl(
     if export_target == "phantom":
         _add_phantom_geometry(sim, config)
     else:
-        _add_scanner_geometry(sim, config=config, include_shielding=include_shielding)
+        _add_scanner_geometry(sim, config=config, args=args)
+        add_fov_volume_to_gate_sim(sim, shape=args.fov_shape, size_mm=args.fov_size_mm)
         _add_phantom_geometry(sim, config)
     _configure_wrl_export(sim, force_phantom_wireframe=True)
 
@@ -729,86 +690,62 @@ def save_simulation_geometry_to_wrl(config: dict, persist_data_dir: Path, args):
     )
 
 
-def render_wrl_to_html(wrl_path: Path, html_output_path: Path):
-    import pyvista as pv
-
-    print(f"Rendering WRL geometry from {wrl_path} to HTML for visualization...")
-    wrl_path = Path(wrl_path)
-    if not wrl_path.exists():
-        raise FileNotFoundError(f"WRL file not found at: {wrl_path}")
-
-    original_solid_names = extract_solid_names_from_wrl(wrl_path)
-
-    detector_mesh = load_wrl_as_mesh(wrl_path)
-
-    print(f"\nTotal SOLID objects in WRL: {len(original_solid_names)}")
-
-    plotter = pv.Plotter(off_screen=True)
-    plotter.add_mesh(detector_mesh, color="lightblue", show_edges=True, opacity=0.7)
-
-    plotter.export_html(html_output_path)
-
-
-def extract_solid_names_from_wrl(wrl_path):
-    """Extract SOLID names from WRL file comments"""
-    solid_names = []
-    try:
-        with open(wrl_path, "r") as f:
-            for line in f:
-                if "#---------- SOLID:" in line:
-                    # Extract the name after "SOLID: "
-                    name = line.split("#---------- SOLID:")[1].strip()
-                    solid_names.append(name)
-    except Exception as e:
-        print(f"Error reading WRL file: {e}")
-    return solid_names
-
-
-def load_wrl_as_mesh(wrl_path):
-    import logging
-
-    import pyvista as pv
-    import vtk
-
-    vtk.vtkObject.GlobalWarningDisplayOff()
-    logging.disable(logging.CRITICAL)
-
-    importer = vtk.vtkVRMLImporter()
-    importer.SetFileName(wrl_path)
-    importer.Update()
-
-    append_filter = vtk.vtkAppendPolyData()
-
-    renderer = importer.GetRenderer()
-    actors = renderer.GetActors()
-    actors.InitTraversal()
-
-    for i in range(actors.GetNumberOfItems()):
-        actor = actors.GetNextActor()
-        if actor and actor.GetMapper():
-            poly_data = actor.GetMapper().GetInput()
-            if poly_data:
-                append_filter.AddInputData(poly_data)
-
-    append_filter.Update()
-
-    mesh = pv.wrap(append_filter.GetOutput())
-
-    return mesh
-
-
-def add_box_source(
-    sim: gate.Simulation, energy_keV: float = 140.0, name: str = "BoxSource", *, args
+def add_fov_volume_to_gate_sim(
+    sim: gate.Simulation, shape: str = "sphere", size_mm: float = 210.0
 ):
+    shape_name = str(shape).lower()
+    if shape_name == "box":
+        fov_volume = sim.add_volume("Box", name="FOVBox")
+        size_value = float(size_mm)
+        fov_volume.size = [size_value, size_value, size_value]
+        fov_volume.mother = "world"
+        fov_volume.material = "Air"
+        return fov_volume
+    if shape_name == "sphere":
+        fov_volume = sim.add_volume("Sphere", name="FOVSphere")
+        fov_volume.rmin = 0.0
+        fov_volume.rmax = float(size_mm) * 0.5 * gate.g4_units.mm
+        fov_volume.mother = "world"
+        fov_volume.material = "Air"
+        return fov_volume
+    raise ValueError(f"Unsupported FOV shape: {shape!r}. Use 'box' or 'sphere'.")
 
+
+def add_volume_source(
+    sim: gate.Simulation,
+    energy_keV: float = 140.0,
+    name: str = "VolumeSource",
+    *,
+    args,
+    fov_shape: str = "sphere",
+    fov_size_mm: float = 210.0,
+):
     source = gate.sources.generic.GenericSource(name=name)
     source.particle = "gamma"
     source.energy.type = "mono"
-    source.activity = _parse_activity_to_bq(args.source_activity) * gate.g4_units.Bq
+    source_activity_bq = getattr(args, "source_activity_bq", None)
+    if source_activity_bq is None and hasattr(args, "source_activity"):
+        source_activity_bq = _parse_activity_to_bq(args.source_activity)
+    if source_activity_bq is None:
+        raise ValueError("A positive source activity is required.")
+    source.activity = source_activity_bq * gate.g4_units.Bq
     source.energy.mono = energy_keV * gate.g4_units.keV
-    source.position.type = "box"
-    source.position.size = [210, 210, 210]  # unit is mms
-    sim.add_source(source, name=name)
+
+    fov_shape_name = str(fov_shape).lower()
+    fov_size = float(fov_size_mm)
+    if fov_shape_name == "box":
+        source.position.type = "box"
+        source.position.size = [fov_size, fov_size, fov_size]
+        source_obj = sim.add_source(source, name=name)
+        source_obj.attached_to = "FOVBox"
+        return source_obj
+    if fov_shape_name == "sphere":
+        source.position.type = "sphere"
+        source.position.radius = fov_size * 0.5 * gate.g4_units.mm
+        source_obj = sim.add_source(source, name=name)
+        source_obj.attached_to = "FOVSphere"
+        return source_obj
+    raise ValueError(f"Unsupported FOV shape: {fov_shape!r}. Use 'box' or 'sphere'.")
 
 
 def configure_chunked_run_timing(sim: gate.Simulation, args):
@@ -816,8 +753,11 @@ def configure_chunked_run_timing(sim: gate.Simulation, args):
         raise ValueError("chunk_duration_s must be > 0")
     if args.num_chunks <= 0:
         raise ValueError("num_chunks must be > 0")
-    source_activity_bq = _parse_activity_to_bq(args.source_activity)
-    if source_activity_bq <= 0:
+
+    source_activity_bq = getattr(args, "source_activity_bq", None)
+    if source_activity_bq is None and hasattr(args, "source_activity"):
+        source_activity_bq = _parse_activity_to_bq(args.source_activity)
+    if source_activity_bq is None or source_activity_bq <= 0:
         raise ValueError("source activity value must be > 0")
 
     sec = gate.g4_units.s
@@ -836,7 +776,7 @@ def configure_chunked_run_timing(sim: gate.Simulation, args):
     print(f"Chunk duration (s): {args.chunk_duration_s}")
     print(f"Number of chunks: {args.num_chunks}")
     print(f"Number of threads: {args.num_threads}")
-    print(f"Source activity: {source_activity_bq:.3e} Bq ({args.source_activity})")
+    print(f"Source activity: {source_activity_bq:.3e} Bq")
     print(
         "Expected primaries/chunk/thread (mean): "
         f"{expected_events_per_chunk_per_thread:.3e}"
@@ -851,24 +791,6 @@ def configure_chunked_run_timing(sim: gate.Simulation, args):
             "WARNING: Expected events/chunk is high relative to 32-bit EventID range. "
             "Reduce activity or chunk_duration_s to lower overflow risk."
         )
-
-
-def add_dc_spect_geometry(sim: gate.Simulation, config: dict):
-
-    # Add a box at the center, and attach the source to it
-    # The box is used to define the source position,
-    # but is not part of the simulation geometry
-    # The size of the box is 220 mm x 220 mm x 220 mm
-    source_box = sim.add_volume("Box", name="SourceBox")
-    source_box.size = [220, 220, 220]  # unit is mm
-    source_box.material = "Air"
-
-    for i in range(80):
-        # Add the i_th collimator
-        add_collimator_to_gate_sim(sim, config, id=i)
-        # Add the i_th pixelated detector crystal
-        add_pixelated_detector_to_gate_sim(sim, config, id=i)
-    # add_shielding_to_gate_sim(sim, config)  # Add the shielding as an example
 
 
 def run_simulation(config: dict, persist_data_dir: Path, args):
@@ -889,22 +811,21 @@ def run_simulation(config: dict, persist_data_dir: Path, args):
     sim.random_seed = unique_seed
     sim.volume_manager.add_material_database(persist_data_dir / "GateMaterials.db")
 
-    simulation_mode = getattr(args, "mode", "box")
+    simulation_mode = getattr(args, "mode", "srm-sim")
+    if simulation_mode == "geometry-only":
+        raise ValueError(
+            "geometry-only is not a simulation mode; use the geometry-only flag instead."
+        )
     print(f"Simulation mode: {simulation_mode}")
 
     # Add Geometry to the simulation.
-    # The phantom mode keeps the center source box out of the world volume to avoid overlaps.
-    if simulation_mode == "box":
-        _add_scanner_geometry(
-            sim, config, include_shielding=bool(getattr(args, "with_shielding", False))
-        )
+    if simulation_mode == "srm-sim":
+        _add_scanner_geometry(sim, config, args=args)
     elif simulation_mode == "jaszczak":
-        _add_scanner_geometry(
-            sim, config, include_shielding=bool(getattr(args, "with_shielding", False))
-        )
+        _add_scanner_geometry(sim, config, args=args)
         _add_phantom_geometry(sim, config)
     else:
-        raise ValueError("simulation_mode must be one of: 'box', 'jaszczak'")
+        raise ValueError("simulation_mode must be one of: 'srm-sim' or 'jaszczak'")
 
     if args.with_shielding:
         print("Simulate with lead shielding = True")
@@ -912,9 +833,17 @@ def run_simulation(config: dict, persist_data_dir: Path, args):
         print("Simulate with lead shielding = False")
 
     # Add Source to the simulation
-    if simulation_mode == "box":
-        add_box_source(sim, energy_keV=140.0, args=args)
-    else:
+    if simulation_mode == "srm-sim":
+        add_fov_volume_to_gate_sim(sim, shape=args.fov_shape, size_mm=args.fov_size_mm)
+        add_volume_source(
+            sim,
+            energy_keV=140.0,
+            name="VolumeSource",
+            args=args,
+            fov_shape=args.fov_shape,
+            fov_size_mm=args.fov_size_mm,
+        )
+    elif simulation_mode == "jaszczak":
         add_background_source(sim, args, phantom_name="Jaszczak_Phantom")
 
     sim.number_of_threads = int(args.num_threads)
@@ -1014,12 +943,18 @@ def parse_args(args=None):
 
     parser.add_argument(
         "-s",
+        "--source-activity-bq",
+        type=float,
+        default=1e6,
+        help="Source activity in Becquerels.",
+    )
+    parser.add_argument(
         "--source-activity",
         nargs="+",
-        default=["1e6", "Bq"],
+        default=None,
         metavar=("VALUE", "UNIT"),
         help=(
-            "Source activity as a value with an optional unit, for example: "
+            "Legacy source activity in value/unit form, for example: "
             "1.2e10 Bq, 0.01 Ci, or 1e6."
         ),
     )
@@ -1100,20 +1035,32 @@ def parse_args(args=None):
         "-m",
         "--mode",
         type=str,
-        default="box",
-        choices=["box", "jaszczak"],
+        default="srm-sim",
+        choices=["srm-sim", "geometry-only", "jaszczak"],
         help=(
-            "Select the simulation setup: box for SRM generation or "
-            "jaszczak for phantom acquisition."
+            "Select the execution mode: 'srm-sim' for the source-in-FOV scan, "
+            "'jaszczak' for phantom acquisition, or 'geometry-only' for WRL export."
         ),
     )
     parser.add_argument(
-        "-t",
         "--source-type",
         type=str,
-        default="Tc-99m",
-        choices=["Gamma-140", "Tc-99m", "Co-57"],
-        help="Radioisotope used for the Jaszczak phantom background source.",
+        default="Gamma",
+        choices=["Gamma"],
+        help="Only monoenergetic gamma emission is supported for the cardiac script.",
+    )
+    parser.add_argument(
+        "--fov-shape",
+        type=str,
+        choices=["box", "sphere"],
+        default="sphere",
+        help="Geometry used for the source FOV region: 'box' or 'sphere'.",
+    )
+    parser.add_argument(
+        "--fov-size-mm",
+        type=float,
+        default=210.0,
+        help="FOV size in mm. For box it's the side length; for sphere it's the radius.",
     )
     parsed_args = parser.parse_args(args)
     return parsed_args
@@ -1121,6 +1068,8 @@ def parse_args(args=None):
 
 def main():
     args = parse_args()
+    if args.source_activity is not None:
+        args.source_activity_bq = _parse_activity_to_bq(args.source_activity)
 
     persistent_data_dir = qmirt.utils.filesystem.search_dir_up(
         "persistent_data", __file__
@@ -1129,11 +1078,10 @@ def main():
         args.job_array_id, args.job_array_task_id
     )
 
-    # Update args directly to pass downstream
     args.job_array_id = resolved_job_array_id
     args.job_array_task_id = resolved_job_array_task_id
 
-    if args.geometry_only:
+    if args.mode == "geometry-only" or args.geometry_only:
         config = get_dc_spect_geometry_config(
             _resolve_xlsx_path(persistent_data_dir, args.xlsx_path),
             stl_dir=persistent_data_dir / "cardiac_spect" / "stl",
@@ -1143,14 +1091,17 @@ def main():
             config,
             persistent_data_dir,
             args,
-            export_target=args.geometry_only,
+            export_target=(args.geometry_only if args.geometry_only else "scanner"),
         )
-    else:
-        config = get_dc_spect_geometry_config(
-            _resolve_xlsx_path(persistent_data_dir, args.xlsx_path),
-            stl_dir=persistent_data_dir / "cardiac_spect" / "stl",
-        )
-        run_simulation(config, persistent_data_dir, args)
+        return
+
+    config = get_dc_spect_geometry_config(
+        _resolve_xlsx_path(persistent_data_dir, args.xlsx_path),
+        stl_dir=persistent_data_dir / "cardiac_spect" / "stl",
+    )
+    if args.mode not in {"srm-sim", "jaszczak"}:
+        raise ValueError(f"Unsupported mode: {args.mode!r}")
+    run_simulation(config, persistent_data_dir, args)
 
 
 if __name__ == "__main__":
