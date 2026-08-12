@@ -626,7 +626,6 @@ def parse_arguments():
         help="Threshold for expected events per chunk to warn about EventID overflow.",
     )
     parser.add_argument(
-        "-m",
         "--mapping-mode",
         type=str,
         choices=["sequential", "reverse", "random"],
