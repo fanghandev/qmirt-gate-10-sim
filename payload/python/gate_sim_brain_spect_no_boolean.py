@@ -370,7 +370,7 @@ def add_geometry_to_gate_sim(sim: gate.Simulation, pl_df: pl.DataFrame, args):
         add_pixelated_detector_to_gate_sim(sim, config, pl_df, id)
     if getattr(args, "with_shielding", False):
         add_shielding_to_gate_sim(sim, config)
-    add_fov_box_to_gate_sim(sim)
+    add_fov_volume_to_gate_sim(sim, shape=args.fov_shape, size_mm=args.fov_size_mm)
 
 
 def _apply_debug_geometry_settings(sim: gate.Simulation, args):
@@ -412,25 +412,64 @@ def run_simulation_with_geometry_only(args):
     print(f"Geometry stored in:\n  {sim.user_info.visu_filename}")
 
 
-def add_fov_box_to_gate_sim(sim: gate.Simulation):
-    source_box = sim.add_volume("Box", name="FOVBox")
-    source_box.size = [160.0, 160.0, 160.0]  # unit is mm
-    source_box.mother = "world"
-    source_box.material = "Air"
+def add_fov_volume_to_gate_sim(
+    sim: gate.Simulation, shape: str = "box", size_mm: float = 150.0
+):
+    shape_name = str(shape).lower()
+    if shape_name == "box":
+        source_volume = sim.add_volume("Box", name="FOVBox")
+        size_value = float(size_mm)
+        source_volume.size = [size_value, size_value, size_value]
+        source_volume.mother = "world"
+        source_volume.material = "Air"
+        return source_volume
+    if shape_name == "sphere":
+        source_volume = sim.add_volume("Sphere", name="FOVSphere")
+        source_volume.rmax = float(size_mm) * gate.g4_units.mm
+        source_volume.mother = "world"
+        source_volume.material = "Air"
+        return source_volume
+    raise ValueError(f"Unsupported FOV shape: {shape!r}. Use 'box' or 'sphere'.")
 
 
-def add_box_source(
-    sim: gate.Simulation, energy_keV: float = 140.0, name: str = "BoxSource", *, args
+def add_fov_box_to_gate_sim(sim: gate.Simulation, size_mm: float = 150.0):
+    return add_fov_volume_to_gate_sim(sim, shape="box", size_mm=size_mm)
+
+
+def add_fov_sphere_to_gate_sim(sim: gate.Simulation, size_mm: float = 150.0):
+    return add_fov_volume_to_gate_sim(sim, shape="sphere", size_mm=size_mm)
+
+
+def add_volume_source(
+    sim: gate.Simulation,
+    energy_keV: float = 140.0,
+    name: str = "BoxSource",
+    *,
+    args,
+    fov_shape: str = "box",
+    fov_size_mm: float = 150.0,
 ):
     source = gate.sources.generic.GenericSource(name=name)
     source.particle = "gamma"
     source.energy.type = "mono"
     source.activity = parse_activity_to_bq(args.source_activity) * gate.g4_units.Bq
     source.energy.mono = energy_keV * gate.g4_units.keV
-    source.position.type = "box"
-    source.position.size = [160, 160, 160]  # unit is mms
-    box_source = sim.add_source(source, name=name)
-    box_source.attached_to = "FOVBox"
+
+    fov_shape_name = str(fov_shape).lower()
+    fov_size = float(fov_size_mm)
+    if fov_shape_name == "box":
+        source.position.type = "box"
+        source.position.size = [fov_size, fov_size, fov_size]
+        source_obj = sim.add_source(source, name=name)
+        source_obj.attached_to = "FOVBox"
+        return source_obj
+    if fov_shape_name == "sphere":
+        source.position.type = "sphere"
+        source.position.radius = fov_size * gate.g4_units.mm
+        source_obj = sim.add_source(source, name=name)
+        source_obj.attached_to = "FOVSphere"
+        return source_obj
+    raise ValueError(f"Unsupported FOV shape: {fov_shape!r}. Use 'box' or 'sphere'.")
 
 
 def add_point_source(
@@ -563,14 +602,25 @@ def run_simulation(
     add_geometry_to_gate_sim(sim, geometry_transformation_dataframe, args)
     _apply_debug_geometry_settings(sim, args)
 
-    source_type = args.source_type.lower()
-    # Add Source to the simulation
-    if source_type == "box":
-        add_box_source(sim, energy_keV=140.0, args=args)
+    source_type = str(args.source_type).lower()
+    effective_fov_shape = str(args.fov_shape).lower()
+    if source_type in {"box", "sphere"}:
+        assert effective_fov_shape == source_type, (
+            f"source-type '{source_type}' is incompatible with fov-shape '{effective_fov_shape}'. They must match for volume sources."
+        )
+
+    if source_type in {"box", "sphere"}:
+        add_volume_source(
+            sim,
+            energy_keV=140.0,
+            args=args,
+            fov_shape=effective_fov_shape,
+            fov_size_mm=args.fov_size_mm,
+        )
     elif source_type == "point":
         add_point_source(sim, energy_keV=140.0, args=args)
     else:
-        raise ValueError("source-type must be one of: 'box', 'point'")
+        raise ValueError("source-type must be one of: 'box', 'sphere', 'point'")
 
     sim.number_of_threads = int(args.num_threads)
     configure_chunked_run_timing(sim, args)
@@ -697,16 +747,29 @@ def parse_arguments():
     parser.add_argument(
         "--mode",
         type=str,
-        default="box",
-        choices=["box", "geometry"],
-        help="Select the brain simulation mode: box runs the source simulation, geometry exports only the geometry.",
+        default="geometry-only",
+        choices=["box", "sphere", "geometry-only"],
+        help="Compatibility alias for the source FOV shape or geometry-only export mode.",
     )
     parser.add_argument(
         "--source-type",
         type=str,
         default="box",
-        choices=["box", "point"],
-        help="Select the source geometry used by the brain simulation.",
+        choices=["box", "sphere", "point"],
+        help="Select the source type used by the brain simulation: box, sphere, or point.",
+    )
+    parser.add_argument(
+        "--fov-shape",
+        type=str,
+        default="box",
+        choices=["box", "sphere"],
+        help="FOV shape for the volume source: box or sphere.",
+    )
+    parser.add_argument(
+        "--fov-size-mm",
+        type=float,
+        default=150.0,
+        help="FOV size in mm. For box, this is the side length; for sphere, it is the radius.",
     )
 
     return parser.parse_args()
@@ -730,22 +793,27 @@ def _resolve_job_array_ids(job_array_id: str | None, job_array_task_id: str | No
 
 def main():
     args = parse_arguments()
-    (
-        resolved_job_array_id,
-        resolved_job_array_task_id,
-        resolved_num_threads,
-        resolved_execution_environment,
-    ) = resolve_simulation_runtime_context(
-        args.job_array_id,
-        args.job_array_task_id,
-        args.num_threads,
-        args.execution_environment,
-    )
+    if args.mode is not None:
+        mode_name = str(args.mode).lower()
+        if mode_name in {"box", "sphere"}:
+            args.source_type = mode_name
+            args.fov_shape = mode_name
+        (
+            resolved_job_array_id,
+            resolved_job_array_task_id,
+            resolved_num_threads,
+            resolved_execution_environment,
+        ) = resolve_simulation_runtime_context(
+            args.job_array_id,
+            args.job_array_task_id,
+            args.num_threads,
+            args.execution_environment,
+        )
     args.job_array_id = resolved_job_array_id
     args.job_array_task_id = resolved_job_array_task_id
     args.num_threads = resolved_num_threads
     args.execution_environment = resolved_execution_environment
-    if args.geometry_only or args.mode == "geometry":
+    if args.mode == "geometry-only":
         run_simulation_with_geometry_only(args)
     else:
         run_simulation(

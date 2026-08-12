@@ -12,7 +12,7 @@
       "style": {
         "color": "#a9a9a9",
         "opacity": 0.4,
-        "edge_color": "#555555",
+        "edge_color": "#161616",
         "legend_name": "Collimator"
       }
     },
@@ -26,7 +26,25 @@
       }
     },
     {
+      "pattern": "Shielding*",
+      "style": {
+        "color": "#404040",
+        "opacity": 0.4,
+        "edge_color": "#450000",
+        "legend_name": "Detector Crystal"
+      }
+    },
+    {
       "pattern": "FOVBox*",
+      "style": {
+        "color": "#2ca02c",
+        "opacity": 0.5,
+        "edge_color": "#145a32",
+        "legend_name": "Field of View"
+      }
+    },
+    {
+      "pattern": "FOVSphere*",
       "style": {
         "color": "#2ca02c",
         "opacity": 0.5,
