@@ -4,6 +4,7 @@ import numpy as np
 import opengate as gate
 import polars as pl
 from opengate.geometry.volumes import subtract_volumes, unite_volumes
+from qmirt.utils.simulation import resolve_simulation_runtime_context
 from scipy.spatial.transform import Rotation
 
 import qmirt
@@ -527,10 +528,10 @@ def run_simulation(
     sim.volume_manager.add_material_database(persist_data_dir / "GateMaterials.db")
     print(f"Using GateMaterials.db from {persist_data_dir}")
     # Add Geometry to the simulation
-    add_geometry_to_gate_sim(sim, geometry_transformation_dataframe)
+    add_geometry_to_gate_sim(sim, geometry_transformation_dataframe, args)
 
     # Add Source to the simulation
-    add_box_source(sim, energy_keV=140.0, args=args)
+    add_box_source(sim, energy_keV=140.0, name="BoxSource", args=args)
 
     sim.number_of_threads = int(args.num_threads)
     configure_chunked_run_timing(sim, args)
@@ -558,19 +559,24 @@ def parse_arguments():
     parser.add_argument(
         "-o",
         "--output_dir",
+        "--output-dir",
         type=str,
         required=True,
         help="Directory to store simulation outputs.",
     )
     parser.add_argument(
-        "-j", "--job-array-id", type=int, default=0, help="SLURM job array ID."
+        "-j",
+        "--job-array-id",
+        type=str,
+        default=None,
+        help="SLURM job array ID used for naming output files.",
     )
     parser.add_argument(
         "-k",
         "--job-array-task-id",
-        type=int,
-        default=0,
-        help="SLURM job array task ID.",
+        type=str,
+        default=None,
+        help="SLURM job array task ID used for naming output files.",
     )
     parser.add_argument(
         "-d",
@@ -580,10 +586,19 @@ def parse_arguments():
         help="Duration of each chunk in seconds.",
     )
     parser.add_argument(
-        "-c", "--num-chunks", type=int, default=10, help="Number of chunks to simulate."
+        "-c",
+        "--num-chunks",
+        type=int,
+        default=10,
+        help="Number of chunks to simulate.",
     )
     parser.add_argument(
-        "-t", "--num-threads", type=int, default=1, help="Number of threads to use."
+        "-t",
+        "-n",
+        "--num-threads",
+        type=int,
+        default=None,
+        help="Number of threads to use. Defaults to SLURM_CPUS_PER_TASK when running on SLURM.",
     )
     parser.add_argument(
         "-s",
@@ -593,7 +608,16 @@ def parse_arguments():
         help="Activity of the source in Becquerels.",
     )
     parser.add_argument(
-        "--geometry-only", action="store_true", help="Run geometry-only simulation."
+        "--execution-environment",
+        type=str,
+        default="auto",
+        choices=["auto", "ospool", "slurm", "local"],
+        help="Select the runtime environment so cluster defaults resolve correctly.",
+    )
+    parser.add_argument(
+        "--geometry-only",
+        action="store_true",
+        help="Run geometry-only simulation.",
     )
     parser.add_argument(
         "--eventid-warn-threshold",
@@ -615,12 +639,21 @@ def parse_arguments():
 
 def main():
     args = parse_arguments()
+    (
+        args.job_array_id,
+        args.job_array_task_id,
+        args.num_threads,
+        args.execution_environment,
+    ) = resolve_simulation_runtime_context(
+        args.job_array_id,
+        args.job_array_task_id,
+        args.num_threads,
+        args.execution_environment,
+    )
     if args.geometry_only:
         run_simulation_with_geometry_only(args)
     else:
-        run_simulation(
-            args,
-        )
+        run_simulation(args)
 
 
 if __name__ == "__main__":

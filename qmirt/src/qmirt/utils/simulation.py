@@ -454,9 +454,6 @@ def get_head_rotation_matrix(config: dict, id: int):
     return r
 
 
-id = 0
-
-
 def make_gate_shell_trd(
     sim: gate.Simulation,
     *,
@@ -702,27 +699,6 @@ def create_pyramid_detector_module(
         pixel_count=pixel_count,
         pixel_size_mm=crystal_size_mm / pixel_count,
     )
-    frustum_cavity = TrdVolume(
-        name=f"box_f_cavity_{id}",
-        mother=box_shell.name,
-        dx1=geometry_config_df["body_inner_top_corrected (mm)"][id] * 0.5,
-        dy1=geometry_config_df["body_inner_top_corrected (mm)"][id] * 0.5,
-        dx2=geometry_config_df["body_inner_top (mm)"][id] * 0.5,
-        dy2=geometry_config_df["body_inner_top (mm)"][id] * 0.5,
-        dz=geometry_config_df["wall_thickness (mm)"][id] * 0.5,
-        translation=[
-            0,
-            0,
-            (
-                geometry_config_df["wall_thickness (mm)"][id]
-                - geometry_config_df["box_outer_size_z (mm)"][id]
-            )
-            * 0.5,
-        ],
-        material="Air",
-    )
-
-    sim.add_volume(frustum_cavity, name=frustum_cavity.name)
 
     guide, _ = make_gate_shell_trd(
         sim,

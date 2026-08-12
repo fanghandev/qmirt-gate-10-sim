@@ -10,14 +10,15 @@ JOB_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}"
 TASK_ID="${SLURM_ARRAY_TASK_ID:-${SLURM_PROCID:-0}}"
 OUT_DIR="${OUTPUT_DIR:-output_${JOB_ID}_${TASK_ID}}"
 
+export PYTHONPATH="$REPO_ROOT/qmirt/src${PYTHONPATH:+:$PYTHONPATH}"
 mkdir -p "$OUT_DIR"
 
 echo "Starting SLURM job $JOB_ID task $TASK_ID..."
 
-python3 "payload/python/gate_sim_brain_spect_no_boolean.py" \
+python3 "payload/python/gate_sim_brain_spect_boolean.py" \
     -o "$OUT_DIR" \
     -j "$JOB_ID" \
     -k "$TASK_ID" \
     --execution-environment slurm \
-    -n "${SLURM_CPUS_PER_TASK:-1}" \
+    -t "${SLURM_CPUS_PER_TASK:-1}" \
     "$@"
