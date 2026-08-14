@@ -17,7 +17,7 @@ OUT_DIR="${OUTPUT_DIR:-${REPO_ROOT}/results/cardiac_spect/slurm/${JOB_ID}}"
 
 export REPO_ROOT
 export SIM_TYPE="cardiac"
-export SIM_PYTHON_SCRIPT="payload/python/gate_sim_cardiac_spect_no_boolean.py"
+export SIM_PYTHON_SCRIPT="payload/python/gate_sim_cardiac_spect_boolean.py"
 export PYTHONPATH="$REPO_ROOT/qmirt/src${PYTHONPATH:+:$PYTHONPATH}"
 export SOURCE_ACTIVITY_BQ="${SOURCE_ACTIVITY_BQ:-3.7e5}"
 export CHUNK_DURATION_S="${CHUNK_DURATION_S:-1.0}"
@@ -37,7 +37,7 @@ TASK_START_TS="$(date +%s)"
 if command -v apptainer >/dev/null 2>&1; then
     APPTAINER_CMD=(
         apptainer exec
-        --bind /scratch
+        --bind "${SCRATCH_ROOT}:${SCRATCH_ROOT}"
         --bind "$REPO_ROOT:$REPO_ROOT"
         "$CONTAINER_SIF"
     )
@@ -49,7 +49,7 @@ if [[ ${#APPTAINER_CMD[@]} -gt 0 ]]; then
     sim_cmd=(
         "${APPTAINER_CMD[@]}"
         python3
-        "$REPO_ROOT/payload/python/gate_sim_cardiac_spect_no_boolean.py"
+        "$REPO_ROOT/payload/python/gate_sim_cardiac_spect_boolean.py"
         -o "$OUT_DIR"
         -j "$JOB_ID"
         -k "$TASK_ID"
@@ -62,7 +62,7 @@ if [[ ${#APPTAINER_CMD[@]} -gt 0 ]]; then
 else
     sim_cmd=(
         python3
-        "$REPO_ROOT/payload/python/gate_sim_cardiac_spect_no_boolean.py"
+        "$REPO_ROOT/payload/python/gate_sim_cardiac_spect_boolean.py"
         -o "$OUT_DIR"
         -j "$JOB_ID"
         -k "$TASK_ID"

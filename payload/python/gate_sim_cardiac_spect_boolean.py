@@ -974,7 +974,7 @@ def parse_args(args=None):
     )
     parser.add_argument(
         "--eventid-warn-threshold",
-        type=float,
+        type=int,
         default=1.5e9,
         help="Warn if expected events per chunk exceed this threshold.",
     )
@@ -982,6 +982,16 @@ def parse_args(args=None):
         "--debug-geometry",
         action="store_true",
         help="Dump the geometry tree and enable verbose Geant4 output before running.",
+    )
+    parser.add_argument(
+        "--execution-environment",
+        type=str,
+        default="auto",
+        choices=["auto", "ospool", "slurm", "local"],
+        help=(
+            "Select the runtime environment so the script can resolve default job IDs "
+            "and thread counts for OSPool, SLURM, or local runs."
+        ),
     )
     parser.add_argument(
         "-n", "--num-threads", type=int, default=1, help="Number of threads requested."

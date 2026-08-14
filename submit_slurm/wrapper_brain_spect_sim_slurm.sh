@@ -15,6 +15,14 @@ JOB_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}"
 TASK_ID="${SLURM_ARRAY_TASK_ID:-${SLURM_PROCID:-0}}"
 OUT_DIR="${OUTPUT_DIR:-${REPO_ROOT}/results/brain_spect/slurm/${JOB_ID}}"
 
+# SCRATCH_ROOT must be exported from parent submission script
+# Fail loudly if it's missing (parent script should have set it)
+if [[ -z "${SCRATCH_ROOT:-}" ]]; then
+    echo "Error: SCRATCH_ROOT not exported from parent submission script"
+    echo "This should be set by run_spect_sim_slurm.sh based on cluster detection."
+    exit 1
+fi
+export SCRATCH_ROOT 
 export REPO_ROOT
 export PYTHONPATH="$REPO_ROOT/qmirt/src${PYTHONPATH:+:$PYTHONPATH}"
 export SOURCE_ACTIVITY_BQ="${SOURCE_ACTIVITY_BQ:-3.7e5}"
@@ -35,7 +43,7 @@ TASK_START_TS="$(date +%s)"
 if command -v apptainer >/dev/null 2>&1; then
     APPTAINER_CMD=(
         apptainer exec
-        --bind /scratch
+        --bind "${SCRATCH_ROOT}:${SCRATCH_ROOT}"
         --bind "$REPO_ROOT:$REPO_ROOT"
         "$CONTAINER_SIF"
     )
@@ -52,7 +60,7 @@ if [[ ${#APPTAINER_CMD[@]} -gt 0 ]]; then
         -j "$JOB_ID"
         -k "$TASK_ID"
         --execution-environment slurm
-        -t "${SLURM_CPUS_PER_TASK:-1}"
+        -n "${SLURM_CPUS_PER_TASK:-1}"
         -s "$SOURCE_ACTIVITY_BQ"
         -d "$CHUNK_DURATION_S"
         -c "$NUM_CHUNKS"
@@ -65,7 +73,7 @@ else
         -j "$JOB_ID"
         -k "$TASK_ID"
         --execution-environment slurm
-        -t "${SLURM_CPUS_PER_TASK:-1}"
+        -n "${SLURM_CPUS_PER_TASK:-1}"
         -s "$SOURCE_ACTIVITY_BQ"
         -d "$CHUNK_DURATION_S"
         -c "$NUM_CHUNKS"
