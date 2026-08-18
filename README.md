@@ -29,6 +29,81 @@ apptainer pull oras://ghcr.io/fanghandev/qmirt-gate-10-sim-sif:v1.0.0
 mv qmirt-gate-10-sim-sif_v1.0.0.sif /ospool/ap40/data/$USER/qmirt-gate-10-sim.sif
 ```
 
+## SLURM submission helper
+
+Use the helper in [submit_slurm/run_spect_sim_slurm.sh](submit_slurm/run_spect_sim_slurm.sh) to submit brain or cardiac simulations to a SLURM-managed cluster.
+
+### Basic usage
+
+From the repository root:
+
+```bash
+./submit_slurm/run_spect_sim_slurm.sh brain --cluster bridges2 --account <project_id> --dry-run
+./submit_slurm/run_spect_sim_slurm.sh cardiac --cluster expanse --account <project_id> --dry-run
+./submit_slurm/run_spect_sim_slurm.sh brain --cluster eris --dry-run
+```
+
+The script:
+
+- auto-detects the cluster from `hostname` when `--cluster` is omitted
+- validates supported partitions for the selected cluster
+- creates a dated log directory and a per-batch scratch/output directory
+- generates a `.sbatch` file and submits it with `sbatch`
+- uses the Apptainer image in `submit_slurm/`
+
+### Cluster-specific notes
+
+- `eris`: uses `/scratch/f/fh890` and default partition `normal`
+- `expanse`: requires `--account` and uses `/expanse/lustre/projects/${ACCOUNT}/${USER}`
+- `bridges2`: uses the system-provided `PROJECT` environment variable when available; `PROJECT` is already the project root path (for example `/ocean/projects/med260005p/fhan1`), so the script uses it directly and does not append `${USER}` again
+
+### Job-array mode (default)
+
+```bash
+./submit_slurm/run_spect_sim_slurm.sh brain \
+  --job-count 20 \
+  --cpus-per-task 4 \
+  --time-limit 04:00:00 \
+  --mem-gb 16 \
+  --account <project_id> \
+  --partition RM
+```
+
+This submits a SLURM array job and each task runs with its own task ID and output directory.
+
+### Whole-node mode
+
+If you want one task per node with multithreading enabled for the full node, use `--nodes`:
+
+```bash
+./submit_slurm/run_spect_sim_slurm.sh brain \
+  --cluster bridges2 \
+  --account <project_id> \
+  --nodes 2
+```
+
+This requests whole-node allocation with one task per node and sets `--cpus-per-task` to the node size for GATE multithreading.
+
+### Test mode
+
+```bash
+./submit_slurm/run_spect_sim_slurm.sh brain --cluster bridges2 --account <project_id> --test-mode --dry-run
+```
+
+This reduces the run to a small pilot configuration suitable for quick validation.
+
+### Dry-run / inspect generated script
+
+```bash
+./submit_slurm/run_spect_sim_slurm.sh brain \
+  --cluster bridges2 \
+  --account <project_id> \
+  --test-mode \
+  --dry-run
+```
+
+This prints the generated `.sbatch` script without submitting it, so you can confirm the job directives, partitions, and output paths before submitting.
+
 ## 40 trillion-event simulation plan
 
 The long-run goal is to reach a total of $4 \times 10^{13}$ simulated events. This is not a single-job target; it must be treated as a staged campaign built from many independent array chunks.

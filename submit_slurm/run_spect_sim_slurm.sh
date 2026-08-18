@@ -160,14 +160,21 @@ elif [[ "$CLUSTER" == "bridges2" ]]; then
     VALID_PARTITIONS="RM RM-512 RM-shared RM-small GPU GPU-shared GPU-small EM ROBO ROBO-8 HACC GPU-dev applications"
     PARTITION="${PARTITION:-RM}"
 
-    BRIDGES_PROJECT="${PROJECT:-${ACCOUNT:-}}"
-    if [[ -z "$BRIDGES_PROJECT" ]]; then
-        echo "Error: no project allocation is available for PSC Bridges2. The system normally sets PROJECT automatically; for local testing, pass --account (-A)."
-        exit 1
+    if [[ -n "${PROJECT:-}" ]]; then
+        # On Bridges2, PROJECT is already the project root path provided by the system.
+        SCRATCH_ROOT="${PROJECT}"
+    elif [[ -n "${ACCOUNT:-}" ]]; then
+        # Local fallback for dry runs or non-allocated shells.
+        SCRATCH_ROOT="/ocean/projects/${ACCOUNT}/${USER}"
+    else
+        if [[ "$DRY_RUN" -eq 1 ]]; then
+            SCRATCH_ROOT="${HOME}/scratch/qmirt-bridges2"
+            echo "Warning: PROJECT is not set in this shell; using local preview scratch path ${SCRATCH_ROOT} for dry-run only."
+        else
+            echo "Error: no project allocation is available for PSC Bridges2. The system normally sets PROJECT automatically; for local testing, pass --account (-A)."
+            exit 1
+        fi
     fi
-
-    # Use the system-provided project value when available; do not overwrite PROJECT at runtime.
-    SCRATCH_ROOT="/pylon5/${BRIDGES_PROJECT}/${USER}"
 
 elif [[ "$CLUSTER" == "eris" ]]; then
     VALID_PARTITIONS="normal long bigmem interactive debug"

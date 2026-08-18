@@ -37,7 +37,24 @@ Python 3.12.3
 
 ## Running jobs on a SLURM-managed cluster
 
-1. From the repository root, run one of the `run_*.sh` helpers in `submit_slurm/`.
-2. The helper creates a dated log folder and a per-job output folder, then submits a SLURM array job.
-3. Each SLURM task runs the matching wrapper, which forwards the SLURM job and task IDs to the Python entrypoint.
-4. Adjust `--cpus-per-task`, `--time`, and `--mem` in the generated `.sbatch` file if your cluster policy requires different defaults.
+Use the main submission helper in `submit_slurm/run_spect_sim_slurm.sh` from the repository root.
+
+1. Pick the simulation type: `brain` or `cardiac`.
+2. Set the cluster and account as needed:
+   - ERIS: `--cluster eris`
+   - Expanse: `--cluster expanse --account <project_id>`
+   - Bridges2: `--cluster bridges2` and rely on the system-provided `PROJECT` variable when available; `PROJECT` is already the project root path (for example `/ocean/projects/med260005p/fhan1`), so do not append `${USER}` again.
+3. Use `--dry-run` first to inspect the generated `.sbatch` file before submitting.
+4. The helper creates a dated log folder and a scratch/output directory, then submits the job with `sbatch`.
+5. Default behavior is a SLURM array job; use `--nodes N` for one-task-per-node whole-node execution with full-node multithreading.
+6. Use `--test-mode` for a fast pilot run.
+
+### Examples
+
+```bash
+./submit_slurm/run_spect_sim_slurm.sh brain --cluster bridges2 --account <project_id> --dry-run
+./submit_slurm/run_spect_sim_slurm.sh brain --cluster bridges2 --test-mode --nodes 1 --dry-run
+./submit_slurm/run_spect_sim_slurm.sh brain --job-count 20 --cpus-per-task 4 --time-limit 04:00:00 --mem-gb 16 --dry-run
+```
+
+The wrapper script forwards SLURM job metadata to the Python entrypoint and passes `-n ${SLURM_CPUS_PER_TASK:-1}` so GATE can use multithreading when the request includes more than one CPU per task.
