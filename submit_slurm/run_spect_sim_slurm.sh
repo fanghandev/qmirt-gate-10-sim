@@ -206,6 +206,11 @@ if [[ ! -f "$SIM_WRAPPER" ]]; then
     exit 1
 fi
 
+EXPECTED_EVENTS_PER_JOB="$(awk -v a="$SOURCE_ACTIVITY_BQ" -v d="$CHUNK_DURATION_S" -v c="$NUM_CHUNKS" -v t="$CPUS_PER_TASK" 'BEGIN { printf "%.0f", a * d * c * t }')"
+EXPECTED_EVENTS_TOTAL="$(awk -v a="$SOURCE_ACTIVITY_BQ" -v d="$CHUNK_DURATION_S" -v c="$NUM_CHUNKS" -v t="$CPUS_PER_TASK" -v j="$JOB_COUNT" 'BEGIN { printf "%.0f", a * d * c * t * j }')"
+EXPECTED_EVENTS_PER_JOB_FMT="$(awk -v n="$EXPECTED_EVENTS_PER_JOB" 'function comma(x, s, r) { s = x ""; while (length(s) > 3) { r = "," substr(s, length(s)-2, 3) r; s = substr(s, 1, length(s)-3) } return s r } BEGIN { print comma(n) }')"
+EXPECTED_EVENTS_TOTAL_FMT="$(awk -v n="$EXPECTED_EVENTS_TOTAL" 'function comma(x, s, r) { s = x ""; while (length(s) > 3) { r = "," substr(s, length(s)-2, 3) r; s = substr(s, 1, length(s)-3) } return s r } BEGIN { print comma(n) }')"
+
 BATCH_ID="batch_$(date +%Y%m%d_%H%M%S)"
 LOG_DIR="${REPO_ROOT}/submit_slurm/logs/${BATCH_ID}"
 DATA_DIR="${SCRATCH_ROOT}/${OUTPUT_SUBDIR}/${BATCH_ID}"
@@ -282,6 +287,8 @@ if [[ -n "$ACCOUNT" ]]; then echo "Account: ${ACCOUNT}"; fi
 echo "Source activity: ${SOURCE_ACTIVITY_BQ} Bq"
 echo "Chunk duration: ${CHUNK_DURATION_S} s"
 echo "Num chunks: ${NUM_CHUNKS}"
+echo "Expected events per job (approx): ${EXPECTED_EVENTS_PER_JOB_FMT}"
+echo "Expected events across all jobs (approx): ${EXPECTED_EVENTS_TOTAL_FMT}"
 if [[ "$TEST_MODE" -eq 1 ]]; then echo "*** TEST MODE ENABLED ***"; fi
 echo "Created output folder: $DATA_DIR"
 echo "Created log folder:    $LOG_DIR"
