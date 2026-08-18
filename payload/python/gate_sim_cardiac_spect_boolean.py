@@ -1037,9 +1037,11 @@ def parse_args(args=None):
         help="SLURM_ARRAY_TASK_ID used for naming output files.",
     )
     parser.add_argument(
-        "--with-shielding",
-        action="store_true",
-        help="Include shielding in the simulation.",
+        "--no-shielding",
+        action="store_false",
+        dest="with_shielding",
+        default=True,
+        help="Disable shielding in the simulation (shielding is enabled by default).",
     )
     parser.add_argument(
         "-m",

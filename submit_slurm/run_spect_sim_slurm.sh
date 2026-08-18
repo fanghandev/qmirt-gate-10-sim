@@ -16,6 +16,8 @@ CPUS_PER_TASK="1"
 TIME_LIMIT="12:00:00"
 MEM_GB="4"
 DRY_RUN=0
+TEST_MODE=0
+NUM_NODES=0
 SOURCE_ACTIVITY_BQ="${SOURCE_ACTIVITY_BQ:-3.7e5}"
 CHUNK_DURATION_S="${CHUNK_DURATION_S:-1.0}"
 NUM_CHUNKS="${NUM_CHUNKS:-1}"
@@ -29,9 +31,17 @@ CONCURRENT_LIMIT=""
 usage() {
     echo "Usage: $0 [brain|cardiac|/path/to/wrapper.sh] [job_count] [cpus_per_task] [time_limit] [mem_gb]"
     echo "  or:    $0 [--wrapper /path/to/wrapper.sh] [--job-count N] [--cpus-per-task N] [--time-limit HH:MM:SS] [--mem-gb N]"
-    echo "            [--partition PART] [--account ALLOCATION_ID] [--cluster eris|expanse] [--concurrent-limit LIMIT]"
-    echo "            [--source-activity-bq VALUE] [--chunk-duration-s VALUE] [--num-chunks N] [--dry-run]"
+    echo "            [--partition PART] [--account ALLOCATION_ID] [--cluster eris|expanse|bridges2] [--concurrent-limit LIMIT]"
+    echo "            [--source-activity-bq VALUE] [--chunk-duration-s VALUE] [--num-chunks N]"
+    echo "            [--nodes N] [--test-mode] [--dry-run]"
     echo "Supported simulation types: brain, cardiac"
+    echo "Supported clusters: eris, expanse, bridges2"
+    echo ""
+    echo "Whole-node allocation:"
+    echo "  --nodes N              Request N whole nodes with single task per node (128 cores/task on Bridges2/Expanse)"
+    echo "  Example: --nodes 20 runs one simulation per node with 128-core multithreading"
+    echo ""
+    echo "Test mode: --test-mode sets job_count=2, time_limit=0:30:00, cpus_per_task=4, activity=1e4, chunks=1"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -70,6 +80,8 @@ while [[ $# -gt 0 ]]; do
         --source-activity-bq) SOURCE_ACTIVITY_BQ="$2"; shift 2 ;;
         --chunk-duration-s) CHUNK_DURATION_S="$2"; shift 2 ;;
         --num-chunks) NUM_CHUNKS="$2"; shift 2 ;;
+        --nodes) NUM_NODES="$2"; shift 2 ;;
+        --test-mode) TEST_MODE=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         --help|-h) usage; exit 0 ;;
         *)
@@ -91,10 +103,42 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# --- Whole-Node Allocation Configuration ---
+if [[ "$NUM_NODES" -gt 0 ]]; then
+    echo "Whole-node allocation mode: $NUM_NODES nodes with 128-core multithreading per node"
+    CPUS_PER_TASK=128
+    # Adjust memory for whole node: use 240GB out of 256GB node capacity
+    if [[ "$MEM_GB" -lt 100 ]]; then
+        MEM_GB=240
+        echo "Auto-adjusted memory to 240GB for whole-node allocation"
+    fi
+fi
+
+# --- Test Mode Configuration ---
+if [[ "$TEST_MODE" -eq 1 ]]; then
+    echo "Test mode enabled: using reduced parameters"
+    JOB_COUNT=2
+    # Only override CPUS_PER_TASK if not using whole-node mode
+    if [[ "$NUM_NODES" -eq 0 ]]; then
+        CPUS_PER_TASK=4
+    fi
+    TIME_LIMIT="0:30:00"
+    # Only override memory if not using whole-node mode
+    if [[ "$NUM_NODES" -eq 0 ]]; then
+        MEM_GB=8
+    fi
+    CHUNK_DURATION_S=0.1
+    NUM_CHUNKS=1
+    SOURCE_ACTIVITY_BQ=1e4
+fi
+
 # --- Cluster Detection & Configuration ---
 if [[ -z "$CLUSTER" ]]; then
-    if [[ "$(hostname)" == *"expanse"* ]]; then
+    HOSTNAME=$(hostname)
+    if [[ "$HOSTNAME" == *"expanse"* ]]; then
         CLUSTER="expanse"
+    elif [[ "$HOSTNAME" == *"bridges"* ]]; then
+        CLUSTER="bridges2"
     else
         CLUSTER="eris"
     fi
@@ -112,6 +156,19 @@ if [[ "$CLUSTER" == "expanse" ]]; then
     # Use Expanse's Lustre scratch file system based on the allocation account
     SCRATCH_ROOT="/expanse/lustre/projects/${ACCOUNT}/${USER}"
 
+elif [[ "$CLUSTER" == "bridges2" ]]; then
+    VALID_PARTITIONS="RM RM-512 RM-shared RM-small GPU GPU-shared GPU-small EM ROBO ROBO-8 HACC GPU-dev applications"
+    PARTITION="${PARTITION:-RM}"
+
+    BRIDGES_PROJECT="${PROJECT:-${ACCOUNT:-}}"
+    if [[ -z "$BRIDGES_PROJECT" ]]; then
+        echo "Error: no project allocation is available for PSC Bridges2. The system normally sets PROJECT automatically; for local testing, pass --account (-A)."
+        exit 1
+    fi
+
+    # Use the system-provided project value when available; do not overwrite PROJECT at runtime.
+    SCRATCH_ROOT="/pylon5/${BRIDGES_PROJECT}/${USER}"
+
 elif [[ "$CLUSTER" == "eris" ]]; then
     VALID_PARTITIONS="normal long bigmem interactive debug"
     PARTITION="${PARTITION:-normal}"
@@ -119,19 +176,16 @@ elif [[ "$CLUSTER" == "eris" ]]; then
     # Default ERIS scratch root
     SCRATCH_ROOT="/scratch/f/fh890"
 else
-    echo "Error: Unknown cluster '$CLUSTER'. Use 'eris' or 'expanse'."
+    echo "Error: Unknown cluster '$CLUSTER'. Use 'eris', 'expanse', or 'bridges2'."
     exit 1
 fi
 
-case "$PARTITION" in
-    compute|shared|normal|long|bigmem|interactive|debug)
-        ;;
-    *)
-        echo "Error: unsupported partition '$PARTITION' for cluster '$CLUSTER'"
-        echo "Supported partitions on $CLUSTER: ${VALID_PARTITIONS}"
-        exit 1
-        ;;
-esac
+# Validate partition against cluster-specific valid partitions
+if [[ ! " $VALID_PARTITIONS " =~ " $PARTITION " ]]; then
+    echo "Error: unsupported partition '$PARTITION' for cluster '$CLUSTER'"
+    echo "Supported partitions on $CLUSTER: ${VALID_PARTITIONS}"
+    exit 1
+fi
 
 if ! [[ "$JOB_COUNT" =~ ^[1-9][0-9]*$ ]]; then echo "job_count must be a positive integer"; exit 1; fi
 if ! [[ "$CPUS_PER_TASK" =~ ^[1-9][0-9]*$ ]]; then echo "cpus_per_task must be a positive integer"; exit 1; fi
@@ -161,15 +215,23 @@ cat > "$SBATCH_FILE" <<EOF
 #SBATCH --job-name=${SIM_LABEL}
 EOF
 
-# Inject Array with Concurrency Limit if provided
-if [[ -n "$CONCURRENT_LIMIT" ]]; then
-    echo "#SBATCH --array=0-$((JOB_COUNT - 1))%${CONCURRENT_LIMIT}" >> "$SBATCH_FILE"
+# Inject Array or Nodes based on allocation mode
+if [[ "$NUM_NODES" -gt 0 ]]; then
+    echo "#SBATCH --nodes=${NUM_NODES}" >> "$SBATCH_FILE"
+    echo "#SBATCH --exclusive=user" >> "$SBATCH_FILE"
+    echo "#SBATCH --ntasks=1" >> "$SBATCH_FILE"
+    echo "#SBATCH --cpus-per-task=${CPUS_PER_TASK}" >> "$SBATCH_FILE"
 else
-    echo "#SBATCH --array=0-$((JOB_COUNT - 1))" >> "$SBATCH_FILE"
+    # Job array mode
+    if [[ -n "$CONCURRENT_LIMIT" ]]; then
+        echo "#SBATCH --array=0-$((JOB_COUNT - 1))%${CONCURRENT_LIMIT}" >> "$SBATCH_FILE"
+    else
+        echo "#SBATCH --array=0-$((JOB_COUNT - 1))" >> "$SBATCH_FILE"
+    fi
+    echo "#SBATCH --cpus-per-task=${CPUS_PER_TASK}" >> "$SBATCH_FILE"
 fi
 
 cat >> "$SBATCH_FILE" <<EOF
-#SBATCH --cpus-per-task=${CPUS_PER_TASK}
 #SBATCH --time=${TIME_LIMIT}
 #SBATCH --mem=${MEM_GB}G
 #SBATCH --partition=${PARTITION}
@@ -204,14 +266,24 @@ EOF
 echo "Simulation wrapper: ${SIM_WRAPPER}"
 echo "Cluster mode: ${CLUSTER}"
 echo "Simulation type: ${SIM_TYPE}"
-echo "Job count: ${JOB_COUNT}"
-if [[ -n "$CONCURRENT_LIMIT" ]]; then echo "Concurrent limit: ${CONCURRENT_LIMIT}"; fi
-echo "CPUs per task: ${CPUS_PER_TASK}"
+if [[ "$NUM_NODES" -gt 0 ]]; then
+    echo "Allocation mode: Whole-node"
+    echo "Number of nodes: ${NUM_NODES}"
+    echo "CPUs per task: ${CPUS_PER_TASK} (full node multithreading)"
+else
+    echo "Allocation mode: Job array"
+    echo "Job count: ${JOB_COUNT}"
+    if [[ -n "$CONCURRENT_LIMIT" ]]; then echo "Concurrent limit: ${CONCURRENT_LIMIT}"; fi
+    echo "CPUs per task: ${CPUS_PER_TASK} (enables multithreading in GATE 10)"
+fi
 echo "Time limit: ${TIME_LIMIT}"
 echo "Memory: ${MEM_GB}G"
 echo "Partition: ${PARTITION}"
 if [[ -n "$ACCOUNT" ]]; then echo "Account: ${ACCOUNT}"; fi
 echo "Source activity: ${SOURCE_ACTIVITY_BQ} Bq"
+echo "Chunk duration: ${CHUNK_DURATION_S} s"
+echo "Num chunks: ${NUM_CHUNKS}"
+if [[ "$TEST_MODE" -eq 1 ]]; then echo "*** TEST MODE ENABLED ***"; fi
 echo "Created output folder: $DATA_DIR"
 echo "Created log folder:    $LOG_DIR"
 echo "Created sbatch file:   $SBATCH_FILE"

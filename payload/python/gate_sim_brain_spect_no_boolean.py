@@ -732,9 +732,11 @@ def parse_arguments():
         help="Threshold for expected events per chunk to warn about EventID overflow.",
     )
     parser.add_argument(
-        "--with-shielding",
-        action="store_true",
-        help="Include shielding in the simulation.",
+        "--no-shielding",
+        action="store_false",
+        dest="with_shielding",
+        default=True,
+        help="Disable shielding in the simulation (shielding is enabled by default).",
     )
     parser.add_argument(
         "-m",
