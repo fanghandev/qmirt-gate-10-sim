@@ -12,13 +12,12 @@ SIM_TYPE="brain"
 SIM_PYTHON_SCRIPT="payload/python/gate_sim_brain_spect_boolean.py"
 OUTPUT_SUBDIR="brain_spect_sim"
 JOB_COUNT="100"
-CPUS_PER_TASK="1"
+CPUS_PER_TASK="128"
 TIME_LIMIT="12:00:00"
 MEM_GB="4"
 DRY_RUN=0
 TEST_MODE=0
-NUM_NODES=0
-SOURCE_ACTIVITY_BQ="${SOURCE_ACTIVITY_BQ:-3.7e5}"
+SOURCE_ACTIVITY_BQ="${SOURCE_ACTIVITY_BQ:-6.25e6}"
 CHUNK_DURATION_S="${CHUNK_DURATION_S:-1.0}"
 NUM_CHUNKS="${NUM_CHUNKS:-1}"
 
@@ -33,13 +32,15 @@ usage() {
     echo "  or:    $0 [--wrapper /path/to/wrapper.sh] [--job-count N] [--cpus-per-task N] [--time-limit HH:MM:SS] [--mem-gb N]"
     echo "            [--partition PART] [--account ALLOCATION_ID] [--cluster eris|expanse|bridges2] [--concurrent-limit LIMIT]"
     echo "            [--source-activity-bq VALUE] [--chunk-duration-s VALUE] [--num-chunks N]"
-    echo "            [--nodes N] [--test-mode] [--dry-run]"
+    echo "            [--test-mode] [--dry-run]"
     echo "Supported simulation types: brain, cardiac"
     echo "Supported clusters: eris, expanse, bridges2"
     echo ""
-    echo "Whole-node allocation:"
-    echo "  --nodes N              Request N whole nodes with single task per node (128 cores/task on Bridges2/Expanse)"
-    echo "  Example: --nodes 20 runs one simulation per node with 128-core multithreading"
+    echo "Array allocation (always one node/task per simulation):"
+    echo "  --job-count N          Number of array jobs (independent simulations)"
+    echo "  --cpus-per-task N      Threads per simulation (e.g., 128 for MT, 1 for ST)"
+    echo "  --concurrent-limit N   Max simultaneous array jobs"
+    echo "  Internal scheduler shape is fixed: --nodes=1 and --ntasks=1 per array job"
     echo ""
     echo "Test mode: --test-mode sets job_count=2, time_limit=0:30:00, cpus_per_task=4, activity=1e4, chunks=1"
 }
@@ -69,7 +70,7 @@ while [[ $# -gt 0 ]]; do
             SIM_LABEL="$(basename "${SIM_WRAPPER%.*}")"
             shift 2
             ;;
-        --job-count) JOB_COUNT="$2"; shift 2 ;;
+        --job-count) JOB_COUNT="$2"; JOB_COUNT_SET=1; shift 2 ;;
         --cpus-per-task) CPUS_PER_TASK="$2"; shift 2 ;;
         --time-limit) TIME_LIMIT="$2"; shift 2 ;;
         --mem-gb) MEM_GB="$2"; shift 2 ;;
@@ -80,7 +81,11 @@ while [[ $# -gt 0 ]]; do
         --source-activity-bq) SOURCE_ACTIVITY_BQ="$2"; shift 2 ;;
         --chunk-duration-s) CHUNK_DURATION_S="$2"; shift 2 ;;
         --num-chunks) NUM_CHUNKS="$2"; shift 2 ;;
-        --nodes) NUM_NODES="$2"; shift 2 ;;
+        --nodes)
+            echo "Error: --nodes is not a user-facing option in array mode."
+            echo "       Control throughput with --job-count and per-job threads with --cpus-per-task."
+            exit 1
+            ;;
         --test-mode) TEST_MODE=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         --help|-h) usage; exit 0 ;;
@@ -103,30 +108,18 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# --- Whole-Node Allocation Configuration ---
-if [[ "$NUM_NODES" -gt 0 ]]; then
-    echo "Whole-node allocation mode: $NUM_NODES nodes with 128-core multithreading per node"
-    CPUS_PER_TASK=128
-    # Adjust memory for whole node: use 240GB out of 256GB node capacity
-    if [[ "$MEM_GB" -lt 100 ]]; then
-        MEM_GB=240
-        echo "Auto-adjusted memory to 240GB for whole-node allocation"
-    fi
+if [[ "$CPUS_PER_TASK" -ge 64 ]] && [[ "$MEM_GB" -lt 100 ]]; then
+    MEM_GB=240
+    echo "Auto-adjusted memory to 240GB for high-thread jobs"
 fi
 
 # --- Test Mode Configuration ---
 if [[ "$TEST_MODE" -eq 1 ]]; then
     echo "Test mode enabled: using reduced parameters"
     JOB_COUNT=2
-    # Only override CPUS_PER_TASK if not using whole-node mode
-    if [[ "$NUM_NODES" -eq 0 ]]; then
-        CPUS_PER_TASK=4
-    fi
+    CPUS_PER_TASK=4
     TIME_LIMIT="0:30:00"
-    # Only override memory if not using whole-node mode
-    if [[ "$NUM_NODES" -eq 0 ]]; then
-        MEM_GB=8
-    fi
+    MEM_GB=8
     CHUNK_DURATION_S=0.1
     NUM_CHUNKS=1
     SOURCE_ACTIVITY_BQ=1e4
@@ -197,6 +190,16 @@ fi
 if ! [[ "$JOB_COUNT" =~ ^[1-9][0-9]*$ ]]; then echo "job_count must be a positive integer"; exit 1; fi
 if ! [[ "$CPUS_PER_TASK" =~ ^[1-9][0-9]*$ ]]; then echo "cpus_per_task must be a positive integer"; exit 1; fi
 if ! [[ "$MEM_GB" =~ ^[1-9][0-9]*$ ]]; then echo "mem_gb must be a positive integer"; exit 1; fi
+if [[ -n "$CONCURRENT_LIMIT" ]]; then
+    if ! [[ "$CONCURRENT_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
+        echo "concurrent_limit must be a positive integer"
+        exit 1
+    fi
+    if [[ "$CONCURRENT_LIMIT" -gt "$JOB_COUNT" ]]; then
+        echo "concurrent_limit (${CONCURRENT_LIMIT}) cannot exceed job_count (${JOB_COUNT})"
+        exit 1
+    fi
+fi
 
 if [[ ! -f "$SIM_WRAPPER" ]]; then
     echo "Error: wrapper script not found: $SIM_WRAPPER"
@@ -222,21 +225,15 @@ cat > "$SBATCH_FILE" <<EOF
 #SBATCH --job-name=${SIM_LABEL}
 EOF
 
-# Inject Array or Nodes based on allocation mode
-if [[ "$NUM_NODES" -gt 0 ]]; then
-    echo "#SBATCH --nodes=${NUM_NODES}" >> "$SBATCH_FILE"
-    echo "#SBATCH --exclusive=user" >> "$SBATCH_FILE"
-    echo "#SBATCH --ntasks=1" >> "$SBATCH_FILE"
-    echo "#SBATCH --cpus-per-task=${CPUS_PER_TASK}" >> "$SBATCH_FILE"
+# Always job array mode (one node/task per array element)
+if [[ -n "$CONCURRENT_LIMIT" ]]; then
+    echo "#SBATCH --array=0-$((JOB_COUNT - 1))%${CONCURRENT_LIMIT}" >> "$SBATCH_FILE"
 else
-    # Job array mode
-    if [[ -n "$CONCURRENT_LIMIT" ]]; then
-        echo "#SBATCH --array=0-$((JOB_COUNT - 1))%${CONCURRENT_LIMIT}" >> "$SBATCH_FILE"
-    else
-        echo "#SBATCH --array=0-$((JOB_COUNT - 1))" >> "$SBATCH_FILE"
-    fi
-    echo "#SBATCH --cpus-per-task=${CPUS_PER_TASK}" >> "$SBATCH_FILE"
+    echo "#SBATCH --array=0-$((JOB_COUNT - 1))" >> "$SBATCH_FILE"
 fi
+echo "#SBATCH --nodes=1" >> "$SBATCH_FILE"
+echo "#SBATCH --ntasks=1" >> "$SBATCH_FILE"
+echo "#SBATCH --cpus-per-task=${CPUS_PER_TASK}" >> "$SBATCH_FILE"
 
 cat >> "$SBATCH_FILE" <<EOF
 #SBATCH --time=${TIME_LIMIT}
@@ -265,7 +262,6 @@ export NUM_CHUNKS="${NUM_CHUNKS}"
 export MAX_TASK_SECONDS="${MAX_TASK_SECONDS:-0}"
 export SIM_TYPE="${SIM_TYPE}"
 export SIM_PYTHON_SCRIPT="${SIM_PYTHON_SCRIPT}"
-export SCRATCH_ROOT="${SCRATCH_ROOT}"
 
 bash "${SIM_WRAPPER}"
 EOF
@@ -273,16 +269,12 @@ EOF
 echo "Simulation wrapper: ${SIM_WRAPPER}"
 echo "Cluster mode: ${CLUSTER}"
 echo "Simulation type: ${SIM_TYPE}"
-if [[ "$NUM_NODES" -gt 0 ]]; then
-    echo "Allocation mode: Whole-node"
-    echo "Number of nodes: ${NUM_NODES}"
-    echo "CPUs per task: ${CPUS_PER_TASK} (full node multithreading)"
-else
-    echo "Allocation mode: Job array"
-    echo "Job count: ${JOB_COUNT}"
-    if [[ -n "$CONCURRENT_LIMIT" ]]; then echo "Concurrent limit: ${CONCURRENT_LIMIT}"; fi
-    echo "CPUs per task: ${CPUS_PER_TASK} (enables multithreading in GATE 10)"
-fi
+echo "Allocation mode: Job array"
+echo "Job count: ${JOB_COUNT}"
+if [[ -n "$CONCURRENT_LIMIT" ]]; then echo "Concurrent limit: ${CONCURRENT_LIMIT}"; fi
+echo "Nodes per job: 1"
+echo "Tasks per job: 1"
+echo "CPUs per task: ${CPUS_PER_TASK} (threads per independent simulation)"
 echo "Time limit: ${TIME_LIMIT}"
 echo "Memory: ${MEM_GB}G"
 echo "Partition: ${PARTITION}"

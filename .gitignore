@@ -231,3 +231,6 @@ a_local_j_*_sim_stats.txt
 results/cardiac_spect/data
 **/sparse_input_lists
 **/filenames.txt
+
+# Apptainer
+*.sif
