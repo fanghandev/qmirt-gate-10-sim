@@ -73,7 +73,7 @@ while [[ $# -gt 0 ]]; do
         --job-count) JOB_COUNT="$2"; JOB_COUNT_SET=1; shift 2 ;;
         --cpus-per-task) CPUS_PER_TASK="$2"; shift 2 ;;
         --time-limit) TIME_LIMIT="$2"; shift 2 ;;
-        --mem-gb) MEM_GB="$2"; shift 2 ;;
+        --mem-gb) MEM_GB="$2"; MEM_GB_SET=1; shift 2 ;;
         --partition) PARTITION="$2"; shift 2 ;;
         --account|-A) ACCOUNT="$2"; shift 2 ;;
         --cluster) CLUSTER="$2"; shift 2 ;;
@@ -107,11 +107,6 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
-
-if [[ "$CPUS_PER_TASK" -ge 64 ]] && [[ "$MEM_GB" -lt 100 ]]; then
-    MEM_GB=240
-    echo "Auto-adjusted memory to 240GB for high-thread jobs"
-fi
 
 # --- Test Mode Configuration ---
 if [[ "$TEST_MODE" -eq 1 ]]; then
@@ -185,6 +180,25 @@ if [[ ! " $VALID_PARTITIONS " =~ " $PARTITION " ]]; then
     echo "Error: unsupported partition '$PARTITION' for cluster '$CLUSTER'"
     echo "Supported partitions on $CLUSTER: ${VALID_PARTITIONS}"
     exit 1
+fi
+
+# Auto-tune memory for high-thread jobs only when user did not pass --mem-gb.
+if [[ -z "${MEM_GB_SET:-}" ]] && [[ "$CPUS_PER_TASK" -ge 64 ]] && [[ "$TEST_MODE" -eq 0 ]]; then
+    case "$CLUSTER" in
+        bridges2)
+            if [[ "$PARTITION" == "RM-512" ]]; then
+                MEM_GB=460
+                echo "Auto-adjusted memory to ${MEM_GB}GB for high-thread jobs on bridges2/${PARTITION}"
+            else
+                MEM_GB=220
+                echo "Auto-adjusted memory to ${MEM_GB}GB for high-thread jobs on bridges2/${PARTITION}"
+            fi
+            ;;
+        expanse|eris)
+            MEM_GB=220
+            echo "Auto-adjusted memory to ${MEM_GB}GB for high-thread jobs on ${CLUSTER}"
+            ;;
+    esac
 fi
 
 if ! [[ "$JOB_COUNT" =~ ^[1-9][0-9]*$ ]]; then echo "job_count must be a positive integer"; exit 1; fi
