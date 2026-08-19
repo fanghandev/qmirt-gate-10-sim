@@ -58,3 +58,58 @@ Use the main submission helper in `submit_slurm/run_spect_sim_slurm.sh` from the
 ```
 
 The wrapper script forwards SLURM job metadata to the Python entrypoint and passes `-n ${SLURM_CPUS_PER_TASK:-1}` so GATE can use multithreading when the request includes more than one CPU per task.
+
+### Resource profiling
+
+The wrappers also collect resource samples by default. Each task writes these files into its output directory:
+
+- `resource_profile.tsv`: raw samples at `PROFILE_INTERVAL_S` second intervals.
+- `resource_profile_summary.txt`: average and peak RSS memory, total CPU percentage, CPU percentage relative to the requested allocation, observed threads, cumulative process read/write volume, and filesystem occupancy.
+
+This works on a local non-SLURM server as well as inside SLURM. On a local server, run the wrapper directly after setting `OUTPUT_DIR`, `SCRATCH_ROOT`, and `CONTAINER_SIF`; `SLURM_CPUS_PER_TASK` is optional and defaults to one. For a shorter interval:
+
+```bash
+submit_slurm/wrapper_brain_spect_sim_slurm.sh --profile-interval-s 1
+```
+
+For the main launcher, use `--no-profile-resources` or `--profile-resources`; `PROFILE_RESOURCES=0` and `PROFILE_INTERVAL_S=1` remain supported as defaults. The process I/O values are cumulative bytes attributed to the simulation process tree, not physical device throughput or disk queue utilization. On SLURM, compare the saved profile with scheduler accounting after completion, for example `sacct -j JOB_ID --format=JobID,Elapsed,AllocCPUS,TotalCPU,MaxRSS,MaxDiskRead,MaxDiskWrite,State` and `seff JOB_ID` where available.
+
+### Sparse brain-SPECT workflow
+
+Sparse mode leaves `gate_sim_brain_spect_boolean.py` unchanged. The wrapper runs the existing simulation repeatedly, retaining `NUM_CHUNKS` inside every Gate invocation for Geant4 event-number protection. After each invocation it converts the local ROOT files into three sparse SRMs, copies only the NPZ files to shared storage, and deletes that loop's ROOT files.
+
+`NUM_LOOPS` and `NUM_CHUNKS` have different meanings:
+
+- `--num-loops N`: number of independent Gate invocations.
+- `--num-chunks N`: timing intervals inside each invocation.
+
+Example local test on a non-SLURM server:
+
+```bash
+mkdir -p /tmp/qmirt-scratch results/local_sparse_test
+SCRATCH_ROOT=/tmp/qmirt-scratch \
+OUTPUT_DIR="$PWD/results/local_sparse_test" \
+CONTAINER_SIF="$PWD/submit_slurm/qmirt-gate-10-sim-sif_v1.0.0.sif" \
+SLURM_CPUS_PER_TASK=4 \
+SOURCE_ACTIVITY_BQ=1e4 \
+CHUNK_DURATION_S=0.1 \
+NUM_CHUNKS=1 \
+NUM_LOOPS=2 \
+bash submit_slurm/wrapper_brain_spect_sim_slurm.sh --sparse-srm --profile-interval-s 1
+```
+
+The production launcher equivalent is:
+
+```bash
+bash submit_slurm/run_spect_sim_slurm.sh brain \
+   --sparse-srm \
+   --num-loops 100 \
+   --num-chunks 10 \
+   --chunk-duration-s 1 \
+   --srm-fov-size-mm 210 \
+   --dry-run
+```
+
+The default sparse outputs are `final_srm_1mm.npz`, `final_srm_1p5mm.npz`, and `final_srm_2mm.npz`. Intermediate ROOT files are placed under `${SLURM_TMPDIR}`, `${TMPDIR}`, or `SCRATCH_ROOT` and are removed only after successful conversion. Use `LOCAL_SCRATCH_ROOT` to select another node-local directory.
+
+The sparse worker currently reconstructs a Cartesian extent of `[-fov_size_mm/2, fov_size_mm/2)` while the existing simulation uses the current FOV arguments unchanged. Confirm the intended spherical source radius before production runs because the existing sphere volume and source-radius expressions do not currently use the same interpretation of `fov-size-mm`.

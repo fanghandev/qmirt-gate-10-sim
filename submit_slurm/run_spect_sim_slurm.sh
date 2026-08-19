@@ -20,6 +20,11 @@ TEST_MODE=0
 SOURCE_ACTIVITY_BQ="${SOURCE_ACTIVITY_BQ:-6.25e6}"
 CHUNK_DURATION_S="${CHUNK_DURATION_S:-1.0}"
 NUM_CHUNKS="${NUM_CHUNKS:-1}"
+NUM_LOOPS="${NUM_LOOPS:-1}"
+SPARSE_SRM="${SPARSE_SRM:-0}"
+SRM_FOV_SIZE_MM="${SRM_FOV_SIZE_MM:-210}"
+PROFILE_RESOURCES="${PROFILE_RESOURCES:-1}"
+PROFILE_INTERVAL_S="${PROFILE_INTERVAL_S:-5}"
 
 # Initialize cluster-specific variables
 CLUSTER=""
@@ -32,6 +37,8 @@ usage() {
     echo "  or:    $0 [--wrapper /path/to/wrapper.sh] [--job-count N] [--cpus-per-task N] [--time-limit HH:MM:SS] [--mem-gb N]"
     echo "            [--partition PART] [--account ALLOCATION_ID] [--cluster eris|expanse|bridges2] [--concurrent-limit LIMIT]"
     echo "            [--source-activity-bq VALUE] [--chunk-duration-s VALUE] [--num-chunks N]"
+    echo "            [--sparse-srm] [--num-loops N] [--srm-fov-size-mm VALUE]"
+    echo "            [--profile-resources|--no-profile-resources] [--profile-interval-s SECONDS]"
     echo "            [--test-mode] [--dry-run]"
     echo "Supported simulation types: brain, cardiac"
     echo "Supported clusters: eris, expanse, bridges2"
@@ -81,6 +88,12 @@ while [[ $# -gt 0 ]]; do
         --source-activity-bq) SOURCE_ACTIVITY_BQ="$2"; shift 2 ;;
         --chunk-duration-s) CHUNK_DURATION_S="$2"; shift 2 ;;
         --num-chunks) NUM_CHUNKS="$2"; shift 2 ;;
+        --sparse-srm) SPARSE_SRM=1; shift ;;
+        --num-loops) NUM_LOOPS="$2"; shift 2 ;;
+        --srm-fov-size-mm) SRM_FOV_SIZE_MM="$2"; shift 2 ;;
+        --profile-resources) PROFILE_RESOURCES=1; shift ;;
+        --no-profile-resources) PROFILE_RESOURCES=0; shift ;;
+        --profile-interval-s) PROFILE_INTERVAL_S="$2"; shift 2 ;;
         --nodes)
             echo "Error: --nodes is not a user-facing option in array mode."
             echo "       Control throughput with --job-count and per-job threads with --cpus-per-task."
@@ -118,6 +131,11 @@ if [[ "$TEST_MODE" -eq 1 ]]; then
     CHUNK_DURATION_S=0.1
     NUM_CHUNKS=1
     SOURCE_ACTIVITY_BQ=1e4
+fi
+
+if [[ "$SPARSE_SRM" == "1" ]] && [[ "$SIM_TYPE" != "brain" ]]; then
+    echo "Error: --sparse-srm is currently supported only for brain simulations."
+    exit 1
 fi
 
 # --- Cluster Detection & Configuration ---
@@ -204,6 +222,19 @@ fi
 if ! [[ "$JOB_COUNT" =~ ^[1-9][0-9]*$ ]]; then echo "job_count must be a positive integer"; exit 1; fi
 if ! [[ "$CPUS_PER_TASK" =~ ^[1-9][0-9]*$ ]]; then echo "cpus_per_task must be a positive integer"; exit 1; fi
 if ! [[ "$MEM_GB" =~ ^[1-9][0-9]*$ ]]; then echo "mem_gb must be a positive integer"; exit 1; fi
+if ! [[ "$NUM_LOOPS" =~ ^[1-9][0-9]*$ ]]; then echo "num_loops must be a positive integer"; exit 1; fi
+if ! [[ "$SRM_FOV_SIZE_MM" =~ ^[0-9]+([.][0-9]+)?$ ]] || [[ "$(awk -v size="$SRM_FOV_SIZE_MM" 'BEGIN { print (size > 0) ? 1 : 0 }')" != "1" ]]; then
+    echo "srm_fov_size_mm must be a positive number"
+    exit 1
+fi
+if [[ "$PROFILE_RESOURCES" != "0" && "$PROFILE_RESOURCES" != "1" ]]; then
+    echo "profile_resources must be 0 or 1"
+    exit 1
+fi
+if ! [[ "$PROFILE_INTERVAL_S" =~ ^[0-9]+([.][0-9]+)?$ ]] || [[ "$(awk -v interval="$PROFILE_INTERVAL_S" 'BEGIN { print (interval > 0) ? 1 : 0 }')" != "1" ]]; then
+    echo "profile_interval_s must be a positive number"
+    exit 1
+fi
 if [[ -n "$CONCURRENT_LIMIT" ]]; then
     if ! [[ "$CONCURRENT_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
         echo "concurrent_limit must be a positive integer"
@@ -228,7 +259,7 @@ EXPECTED_EVENTS_TOTAL_FMT="$(awk -v n="$EXPECTED_EVENTS_TOTAL" 'function comma(x
 BATCH_ID="batch_$(date +%Y%m%d_%H%M%S)"
 LOG_DIR="${REPO_ROOT}/submit_slurm/logs/${BATCH_ID}"
 DATA_DIR="${SCRATCH_ROOT}/${OUTPUT_SUBDIR}/${BATCH_ID}"
-CONTAINER_SIF="${REPO_ROOT}/submit_slurm/qmirt-gate-10-sim-sif_v1.0.0.sif"
+CONTAINER_SIF="${CONTAINER_SIF:-${REPO_ROOT}/submit_slurm/qmirt-gate-10-sim-sif_v1.0.0.sif}"
 SBATCH_FILE="${LOG_DIR}/${SIM_LABEL}_sim_slurm.sbatch"
 
 if [[ ! -f "$CONTAINER_SIF" ]]; then
@@ -278,7 +309,12 @@ export PYTHONPATH="${REPO_ROOT}/qmirt/src\${PYTHONPATH:+:\$PYTHONPATH}"
 export SOURCE_ACTIVITY_BQ="${SOURCE_ACTIVITY_BQ}"
 export CHUNK_DURATION_S="${CHUNK_DURATION_S}"
 export NUM_CHUNKS="${NUM_CHUNKS}"
+export NUM_LOOPS="${NUM_LOOPS}"
+export SPARSE_SRM="${SPARSE_SRM}"
+export SRM_FOV_SIZE_MM="${SRM_FOV_SIZE_MM}"
 export MAX_TASK_SECONDS="${MAX_TASK_SECONDS:-0}"
+export PROFILE_RESOURCES="${PROFILE_RESOURCES}"
+export PROFILE_INTERVAL_S="${PROFILE_INTERVAL_S}"
 export SIM_TYPE="${SIM_TYPE}"
 export SIM_PYTHON_SCRIPT="${SIM_PYTHON_SCRIPT}"
 
@@ -301,6 +337,9 @@ if [[ -n "$ACCOUNT" ]]; then echo "Account: ${ACCOUNT}"; fi
 echo "Source activity: ${SOURCE_ACTIVITY_BQ} Bq"
 echo "Chunk duration: ${CHUNK_DURATION_S} s"
 echo "Num chunks: ${NUM_CHUNKS}"
+echo "Num loops: ${NUM_LOOPS}"
+echo "Sparse SRM: ${SPARSE_SRM}"
+if [[ "$SPARSE_SRM" == "1" ]]; then echo "SRM FOV extent: ${SRM_FOV_SIZE_MM} mm"; fi
 echo "Expected events per job (approx): ${EXPECTED_EVENTS_PER_JOB_FMT}"
 echo "Expected events across all jobs (approx): ${EXPECTED_EVENTS_TOTAL_FMT}"
 if [[ "$TEST_MODE" -eq 1 ]]; then echo "*** TEST MODE ENABLED ***"; fi

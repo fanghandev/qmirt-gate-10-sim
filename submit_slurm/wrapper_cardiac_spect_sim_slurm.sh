@@ -23,6 +23,28 @@ export SOURCE_ACTIVITY_BQ="${SOURCE_ACTIVITY_BQ:-3.7e5}"
 export CHUNK_DURATION_S="${CHUNK_DURATION_S:-1.0}"
 export NUM_CHUNKS="${NUM_CHUNKS:-1}"
 export MAX_TASK_SECONDS="${MAX_TASK_SECONDS:-0}"
+export PROFILE_RESOURCES="${PROFILE_RESOURCES:-1}"
+export PROFILE_INTERVAL_S="${PROFILE_INTERVAL_S:-5}"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --profile-resources) PROFILE_RESOURCES=1; shift ;;
+        --no-profile-resources) PROFILE_RESOURCES=0; shift ;;
+        --profile-interval-s)
+            [[ $# -ge 2 ]] || { echo "Missing value for --profile-interval-s" >&2; exit 2; }
+            PROFILE_INTERVAL_S="$2"
+            shift 2
+            ;;
+        --help|-h)
+            echo "Usage: $0 [--profile-resources|--no-profile-resources] [--profile-interval-s SECONDS]"
+            exit 0
+            ;;
+        *)
+            echo "Unexpected argument: $1" >&2
+            exit 2
+            ;;
+    esac
+done
 
 if [[ ! -f "$CONTAINER_SIF" ]]; then
     echo "Error: Apptainer image not found at $CONTAINER_SIF"
@@ -80,10 +102,16 @@ echo "Source activity: ${SOURCE_ACTIVITY_BQ} Bq"
 echo "Chunk duration: ${CHUNK_DURATION_S} s"
 echo "Num chunks: ${NUM_CHUNKS}"
 
-if [[ "$MAX_TASK_SECONDS" =~ ^[0-9]+$ ]] && [[ "$MAX_TASK_SECONDS" -gt 0 ]]; then
-    timeout --signal=TERM --kill-after=30 "$MAX_TASK_SECONDS" "${sim_cmd[@]}" || sim_exit=$?
+if [[ "$PROFILE_RESOURCES" == "1" ]]; then
+    profile_cmd=(bash "$SCRIPT_DIR/profile_resources.sh" "$OUT_DIR" "$PROFILE_INTERVAL_S" "${sim_cmd[@]}")
 else
-    "${sim_cmd[@]}" || sim_exit=$?
+    profile_cmd=("${sim_cmd[@]}")
+fi
+
+if [[ "$MAX_TASK_SECONDS" =~ ^[0-9]+$ ]] && [[ "$MAX_TASK_SECONDS" -gt 0 ]]; then
+    timeout --signal=TERM --kill-after=30 "$MAX_TASK_SECONDS" "${profile_cmd[@]}" || sim_exit=$?
+else
+    "${profile_cmd[@]}" || sim_exit=$?
 fi
 
 TASK_END_TS="$(date +%s)"

@@ -92,6 +92,22 @@ This requests whole-node allocation with one task per node and sets `--cpus-per-
 
 This reduces the run to a small pilot configuration suitable for quick validation.
 
+### Sparse brain-SPECT SRM mode
+
+Sparse mode keeps the existing Gate simulation script unchanged. The brain wrapper runs multiple independent simulations, preserving `--num-chunks` inside each invocation to limit Geant4 event-number growth. Each loop writes ROOT files to local scratch, converts them to 1 mm, 1.5 mm, and 2 mm sparse NPZ matrices, copies the NPZ files to shared output, and deletes the intermediate ROOT files.
+
+```bash
+bash submit_slurm/run_spect_sim_slurm.sh brain \
+  --sparse-srm \
+  --num-loops 100 \
+  --num-chunks 10 \
+  --chunk-duration-s 1 \
+  --srm-fov-size-mm 210 \
+  --dry-run
+```
+
+`--num-loops` controls independent Gate invocations; `--num-chunks` controls timing intervals within each invocation. Final files are `final_srm_1mm.npz`, `final_srm_1p5mm.npz`, and `final_srm_2mm.npz`. For a local non-SLURM test, set `SCRATCH_ROOT`, `OUTPUT_DIR`, `CONTAINER_SIF`, and `SLURM_CPUS_PER_TASK`, then run `bash submit_slurm/wrapper_brain_spect_sim_slurm.sh --sparse-srm`. Detailed setup and cleanup behavior is documented in [submit_slurm/README.md](submit_slurm/README.md).
+
 ### Dry-run / inspect generated script
 
 ```bash
@@ -346,3 +362,21 @@ Event Rate: ~36,000 events/s per job (single-threaded, 1 CPU per job), 400 jobs 
 ETA: 55555.6 seconds (approximately 15.4 hours) for 400 tasks, 16 to 20 hours.
 Event per batch: 400 tasks $\times$ 100 chunks $\times 2\times 10^7$ events = $$8 \times 10^{11}$$ events
 Total number of batches to reach $4 \times 10^{13}$ events: $50$ batches
+
+### Running on the PSC Bridges2 cluster
+
+#### Estimated throughput and time for a 40 trillion-event campaign
+
+Each node has 128 CPUs, and in this set up we should be able to simulated $\sim 20$ billion events per node per job, each job should be able to finish in $\sim 3$ hours. Each batch can run 32 jobs in parallel, we will need to run about 63 batchs. That is a total of $\sim 189$ hours, or $\sim 8$ days to finish the whole campaign.
+
+#### Disk space considerations
+
+Each job will produce a single output root file, and the size of each output file is $\sim 2.5$ GB. Each batch will produce 32 output files, that is $\sim 80$ GB per batch. The total output size for the whole campaign will be $\sim 5$ TB. Make sure you have enough disk space to store the output files.
+
+#### Split 2000 jobs into 4 campaigns
+
+Do the following for 4 times.
+
+```bash
+./run_spect_sim_slurm.sh brain --cluster bridges2 --job-count 500 --cpus-per-task 128 --concurrent-limit 32 --source-activity-bq 6.25e6 --chunk-duration-s 1.0 --num-chunks 25
+```
