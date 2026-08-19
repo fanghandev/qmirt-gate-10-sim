@@ -5,7 +5,7 @@ cd "$SCRIPT_DIR"
 
 # 1. Generate a unique batch ID
 BATCH_ID="sparse_batch_$(date +%Y%m%d_%H%M%S)"
-FILES_PER_JOB=100
+FILES_PER_JOB=50
 FOV_SIZE=${FOV_SIZE:-150}
 INPUT_SOURCE="filenames.txt"
 VOXEL_SIZES=()
