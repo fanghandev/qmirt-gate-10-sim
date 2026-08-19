@@ -26,7 +26,7 @@ For the existing cardiac simulation batch:
 `--input-source` may be either:
 
 - a directory containing `*.tar.gz` result archives; only direct children are
-	discovered
+  discovered
 - a text file containing one archive path per line
 
 If `--input-source` is omitted, the script uses
@@ -58,6 +58,19 @@ The FOV can also be changed explicitly:
 	1 1.5 2
 ```
 
+Resource profiling is enabled by default for sparse workers. Disable it or
+change the sampling interval from the launcher:
+
+```bash
+./submit_htcondor/run_sparse_batch.sh \
+	--input-source /path/to/archives \
+	--no-profile-resources
+
+./submit_htcondor/run_sparse_batch.sh \
+	--input-source /path/to/archives \
+	--profile-interval-s 10
+```
+
 Use `--help` to display the available launcher options.
 
 ## Job chunking
@@ -82,7 +95,13 @@ the batch output directory:
 ```text
 /ospool/ap40/data/fang.han/<sparse_batch_id>/
 	job_<cluster>_<proc>_sparse_5d_srm_outputs.tar.gz
+	job_<cluster>_<proc>_resource_profile.tsv
+	job_<cluster>_<proc>_resource_profile_summary.txt
 ```
+
+The profiling files report time-series samples and per-job aggregates (average
+CPU usage, CPU usage relative to the requested cores, peak RSS memory, and
+final read/write volume).
 
 ## Event accounting
 

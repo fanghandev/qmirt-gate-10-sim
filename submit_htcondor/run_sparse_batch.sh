@@ -8,6 +8,8 @@ BATCH_ID="sparse_batch_$(date +%Y%m%d_%H%M%S)"
 FILES_PER_JOB=50
 FOV_SIZE=${FOV_SIZE:-150}
 INPUT_SOURCE="filenames.txt"
+PROFILE_RESOURCES=${PROFILE_RESOURCES:-1}
+PROFILE_INTERVAL_S=${PROFILE_INTERVAL_S:-5}
 VOXEL_SIZES=()
 
 while [[ $# -gt 0 ]]; do
@@ -22,8 +24,21 @@ while [[ $# -gt 0 ]]; do
 			FOV_SIZE="$2"
 			shift 2
 			;;
+		--profile-resources)
+			PROFILE_RESOURCES=1
+			shift
+			;;
+		--no-profile-resources)
+			PROFILE_RESOURCES=0
+			shift
+			;;
+		--profile-interval-s)
+			[[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; exit 2; }
+			PROFILE_INTERVAL_S="$2"
+			shift 2
+			;;
 		-h|--help)
-			printf 'Usage: %s [--input-source PATH] [--fov-size MM] [VOXEL_SIZE ...]\n' "$0"
+			printf 'Usage: %s [--input-source PATH] [--fov-size MM] [--profile-resources|--no-profile-resources] [--profile-interval-s SECONDS] [VOXEL_SIZE ...]\n' "$0"
 			exit 0
 			;;
 		*)
@@ -32,6 +47,21 @@ while [[ $# -gt 0 ]]; do
 			;;
 	esac
 done
+
+if [[ ! "$PROFILE_RESOURCES" =~ ^(0|1)$ ]]; then
+	echo "--profile-resources mode must be 0 or 1" >&2
+	exit 2
+fi
+
+if ! [[ "$PROFILE_INTERVAL_S" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+	echo "--profile-interval-s must be a positive number" >&2
+	exit 2
+fi
+
+if ! awk -v interval="$PROFILE_INTERVAL_S" 'BEGIN { exit !(interval > 0) }'; then
+	echo "--profile-interval-s must be greater than 0" >&2
+	exit 2
+fi
 
 if [[ ${#VOXEL_SIZES[@]} -eq 0 ]]; then
 	VOXEL_SIZES=(1 1.5 2)
@@ -86,6 +116,7 @@ echo "Created data folder: $DATA_DIR"
 echo "Created log folder:  $LOG_DIR"
 echo "Created input manifest: $INPUT_MANIFEST"
 echo "Discovered ${#SOURCE_FILES[@]} archives in $JOB_COUNT jobs from $INPUT_SOURCE"
+echo "Resource profiling: ${PROFILE_RESOURCES} (interval ${PROFILE_INTERVAL_S}s)"
 
 # 4. Submit one worker per archive slice. Each worker writes all resolutions.
 echo "Submitting ${#VOXEL_SIZES[@]} SRM resolutions in $JOB_COUNT jobs to $DATA_DIR"
@@ -94,4 +125,6 @@ condor_submit batch_sparse.sub \
 	log_dir="$LOG_DIR" \
 	input_manifest="$INPUT_MANIFEST" \
 	voxel_sizes="${VOXEL_SIZES[*]}" \
-	fov_size="$FOV_SIZE"
+	fov_size="$FOV_SIZE" \
+	profile_resources="$PROFILE_RESOURCES" \
+	profile_interval_s="$PROFILE_INTERVAL_S"
