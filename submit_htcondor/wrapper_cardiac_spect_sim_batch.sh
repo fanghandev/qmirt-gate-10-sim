@@ -30,13 +30,16 @@ mkdir -p "$OUT_DIR"
 echo "Starting job $CLUSTER_ID task $PROC_ID..."
 
 # Optimized for 500 million primaries (safely under the 12-hour eviction window)
-python3 "payload/python/gate_sim_cardiac_spect_no_boolean.py" \
+python3 "payload/python/gate_sim_cardiac_spect_boolean.py" \
     -o "$OUT_DIR" \
     -j "$CLUSTER_ID" \
     -k "$PROC_ID" \
     -n 1 \
-    -m "box" \
-    -t "Gamma-140" \
-    -c 1 \
+    -m "srm-sim" \
+    --source-type "Gamma" \
+    --fov-shape "box" \
+    --fov-size-mm 150.0 \
+    --with-shielding \
+    -c 100 \
     -d 1.0 \
-    -s 500000000
+    -s 5e6

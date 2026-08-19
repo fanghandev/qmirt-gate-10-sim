@@ -27,6 +27,12 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Directory where the combined sparse output is written.",
     )
+    parser.add_argument(
+        "--voxel-size",
+        type=float,
+        default=None,
+        help="Only combine chunks for this voxel size in mm.",
+    )
     return parser.parse_args()
 
 
@@ -37,6 +43,7 @@ def read_scalar(data: np.lib.npyio.NpzFile, key: str, default: float | int) -> f
 
 def combine_crystal_npz_files(
     input_dir: Path,
+    voxel_size: float | None = None,
 ) -> tuple[
     dict[tuple[int, int, int, int, int], int],
     dict[str, object],
@@ -57,13 +64,20 @@ def combine_crystal_npz_files(
     npz_paths = sorted(
         path
         for path in input_dir.rglob("*.npz")
-        if path.name.endswith("_sparse_5d_histograms.npz")
+        if path.name.endswith(("_sparse_5d_srm.npz", "_sparse_5d_histograms.npz"))
+        or path.name.startswith("sparse_5d_srm_")
     )
     if not npz_paths:
         raise FileNotFoundError(f"No sparse NPZ files found in {input_dir}")
 
     for npz_path in npz_paths:
         with np.load(npz_path, allow_pickle=False) as data:
+            file_voxel_size = float(read_scalar(data, "voxel_size", 0.0))
+            if voxel_size is not None and not np.isclose(
+                file_voxel_size, voxel_size
+            ):
+                continue
+
             coords = np.asarray(data["coords"], dtype=np.int32)
             counts = np.asarray(data["counts"], dtype=np.int64)
 
@@ -85,20 +99,33 @@ def combine_crystal_npz_files(
             file_metadata = {
                 "hist_bins": int(read_scalar(data, "hist_bins", 80)),
                 "hist_range": np.asarray(data.get("hist_range", np.array([-80.0, 80.0]))).reshape(-1).tolist(),
+                "voxel_size": file_voxel_size,
+                "fov_size": float(read_scalar(data, "fov_size", 0.0)),
                 "energy_min": float(read_scalar(data, "energy_min", 0.0)),
                 "energy_max": float(read_scalar(data, "energy_max", 0.0)),
             }
             if reference_metadata is None:
                 reference_metadata = file_metadata
+            elif file_metadata != reference_metadata:
+                raise ValueError(
+                    f"Incompatible SRM grid or energy metadata in {npz_path.name}: "
+                    f"{file_metadata} != {reference_metadata}"
+                )
 
-            total_events += int(read_scalar(data, "total_events", 0))
+            total_events += int(
+                read_scalar(data, "simulated_events", read_scalar(data, "total_events", 0))
+            )
             total_sim_time += float(read_scalar(data, "total_sim_time", 0.0))
             total_files += int(read_scalar(data, "file_count", 1))
             total_root_members += int(read_scalar(data, "processed_root_members", 0))
 
             source_files.append(str(npz_path))
 
-    assert reference_metadata is not None
+    if reference_metadata is None:
+        requested = (
+            f" for voxel size {voxel_size:g} mm" if voxel_size is not None else ""
+        )
+        raise FileNotFoundError(f"No compatible sparse NPZ files found{requested}")
     return (
         combined,
         reference_metadata,
@@ -127,8 +154,11 @@ def save_combined_sparse_file(
         output_path,
         coords=coords,
         counts=counts,
+        simulated_events=np.array([total_events], dtype=np.int64),
         hist_bins=np.array([metadata.get("hist_bins", 80)], dtype=np.int32),
         hist_range=np.array(metadata.get("hist_range", [-80.0, 80.0]), dtype=np.float32),
+        voxel_size=np.array([metadata.get("voxel_size", 0.0)], dtype=np.float32),
+        fov_size=np.array([metadata.get("fov_size", 0.0)], dtype=np.float32),
         energy_min=np.array([metadata.get("energy_min", 0.0)], dtype=np.float32),
         energy_max=np.array([metadata.get("energy_max", 0.0)], dtype=np.float32),
         file_count=np.array([file_count], dtype=np.int64),
@@ -152,7 +182,7 @@ def main() -> int:
         total_sim_time,
         total_files,
         total_root_members,
-    ) = combine_crystal_npz_files(args.input_dir)
+    ) = combine_crystal_npz_files(args.input_dir, args.voxel_size)
 
     output_path = save_combined_sparse_file(
         args.output_dir,

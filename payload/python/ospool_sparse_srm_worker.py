@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import tarfile
 from collections import defaultdict
 from pathlib import Path
@@ -65,6 +66,25 @@ def parse_args() -> argparse.Namespace:
         help="Upper energy threshold in MeV.",
     )
     parser.add_argument(
+        "--fov-size",
+        type=float,
+        default=150.0,
+        help="Cubic FOV size in mm when --voxel-size is used.",
+    )
+    parser.add_argument(
+        "--voxel-size",
+        type=float,
+        default=None,
+        help="Single voxel edge length in mm. Derives a centered grid from --fov-size.",
+    )
+    parser.add_argument(
+        "--voxel-sizes",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Multiple voxel edge lengths in mm to accumulate in one pass.",
+    )
+    parser.add_argument(
         "--hist-min",
         type=float,
         default=-105.0,
@@ -96,24 +116,36 @@ def load_file_paths(
     return file_paths[start_index:end_index]
 
 
-<<<<<<< HEAD
-def extract_crystal_id(text: str, pattern: str) -> int | None:
-    match = re.search(pattern, text)
-    if match:
-        return int(match.group(1))
-    fallback = re.search(r"(?:Crystal|crystal|head|Head|a_)(\d+)", text)
-    if fallback:
-        return int(fallback.group(1))
-    return None
+def resolve_histogram_grid(
+    args: argparse.Namespace, voxel_size: float | None = None
+) -> tuple[float, float, int, float]:
+    selected_voxel_size = args.voxel_size if voxel_size is None else voxel_size
+    if selected_voxel_size is None:
+        hist_min = args.hist_min
+        hist_max = args.hist_max
+        hist_bins = args.hist_bins
+    else:
+        if args.fov_size <= 0 or selected_voxel_size <= 0:
+            raise ValueError("--fov-size and --voxel-size must be positive")
+        bins = args.fov_size / selected_voxel_size
+        hist_bins = round(bins)
+        if not np.isclose(bins, hist_bins):
+            raise ValueError("--fov-size must be divisible by --voxel-size")
+        hist_min = -args.fov_size / 2.0
+        hist_max = args.fov_size / 2.0
+
+    if hist_max <= hist_min or hist_bins <= 0:
+        raise ValueError("Histogram range and bin count must be valid")
+    return hist_min, hist_max, hist_bins, (hist_max - hist_min) / hist_bins
 
 
-def parse_stats_member(member_file) -> tuple[float, float]:
-=======
 def parse_stats_member(member_file) -> tuple[int, float]:
->>>>>>> 2eaf7ed (update srm extraction job scripts)
     text_content = member_file.read().decode("utf-8")
     stats_dict = json.loads(text_content)
-    total_events = float(stats_dict["events"]["value"])
+    raw_events = float(stats_dict["events"]["value"])
+    if not math.isfinite(raw_events) or raw_events < 0 or not raw_events.is_integer():
+        raise ValueError(f"Invalid simulated event count in stats member: {raw_events!r}")
+    total_events = int(raw_events)
     total_sim_time = float(stats_dict["sim_stop_time"]["value"]) - float(
         stats_dict["sim_start_time"]["value"]
     )
@@ -167,16 +199,43 @@ def accumulate_sparse(
 
 def main() -> int:
     args = parse_args()
+    if args.voxel_size is not None and args.voxel_sizes is not None:
+        raise ValueError("Use either --voxel-size or --voxel-sizes, not both")
+
+    requested_voxel_sizes = args.voxel_sizes
+    if requested_voxel_sizes is None:
+        requested_voxel_sizes = [args.voxel_size]
+
     file_paths = load_file_paths(args.input_list, args.start_index, args.end_index)
     if not file_paths:
         raise FileNotFoundError("The selected file-list slice is empty.")
 
-    hist_width = (args.hist_max - args.hist_min) / args.hist_bins
-    sparse_store: defaultdict[tuple[int, int, int, int, int], int] = defaultdict(int)
+    grid_specs = []
+    for voxel_size in requested_voxel_sizes:
+        hist_min, hist_max, hist_bins, hist_width = resolve_histogram_grid(
+            args, voxel_size
+        )
+        label = (
+            f"{voxel_size:g}mm"
+            if voxel_size is not None
+            else ""
+        )
+        grid_specs.append(
+            {
+                "label": label,
+                "hist_min": hist_min,
+                "hist_max": hist_max,
+                "hist_bins": hist_bins,
+                "hist_width": hist_width,
+                "sparse_store": defaultdict(int),
+            }
+        )
+
     total_events = 0
     total_sim_time = 0.0
     processed_files = 0
     processed_members = 0
+    stats_member_count = 0
 
     job_tag = (
         args.job_tag
@@ -196,6 +255,7 @@ def main() -> int:
             continue
 
         processed_files += 1
+        archive_stats_count = 0
         with (
             open(archive_path, "rb") as file_obj,
             tarfile.open(fileobj=file_obj, mode="r:gz") as tar,
@@ -205,12 +265,18 @@ def main() -> int:
                     continue
 
                 member_name = member.name
-                if member_name.endswith(".txt"):
+                if Path(member_name).name.endswith("_sim_stats.txt"):
                     extracted = tar.extractfile(member)
                     if extracted is not None:
+                        archive_stats_count += 1
+                        if archive_stats_count > 1:
+                            raise ValueError(
+                                f"Multiple GATE stats members found in {archive_path}"
+                            )
                         events, sim_time = parse_stats_member(extracted)
                         total_events += events
                         total_sim_time += sim_time
+                        stats_member_count += 1
                     continue
 
                 if not member_name.endswith(".root"):
@@ -253,12 +319,12 @@ def main() -> int:
                         pixel_ids = pixel_ids[energy_mask]
 
                         valid_mask = (
-                            (event_x >= args.hist_min)
-                            & (event_x < args.hist_max)
-                            & (event_y >= args.hist_min)
-                            & (event_y < args.hist_max)
-                            & (event_z >= args.hist_min)
-                            & (event_z < args.hist_max)
+                            (event_x >= hist_min)
+                            & (event_x < hist_max)
+                            & (event_y >= hist_min)
+                            & (event_y < hist_max)
+                            & (event_z >= hist_min)
+                            & (event_z < hist_max)
                         )
                         if not np.any(valid_mask):
                             continue
@@ -269,48 +335,72 @@ def main() -> int:
                         crystal_ids = crystal_ids[valid_mask]
                         pixel_ids = pixel_ids[valid_mask]
 
-                        x_bin = np.floor((event_x - args.hist_min) / hist_width).astype(
-                            np.int32
-                        )
-                        y_bin = np.floor((event_y - args.hist_min) / hist_width).astype(
-                            np.int32
-                        )
-                        z_bin = np.floor((event_z - args.hist_min) / hist_width).astype(
-                            np.int32
-                        )
+                        for grid in grid_specs:
+                            grid_hist_min = grid["hist_min"]
+                            grid_hist_width = grid["hist_width"]
+                            x_bin = np.floor(
+                                (event_x - grid_hist_min) / grid_hist_width
+                            ).astype(np.int32)
+                            y_bin = np.floor(
+                                (event_y - grid_hist_min) / grid_hist_width
+                            ).astype(np.int32)
+                            z_bin = np.floor(
+                                (event_z - grid_hist_min) / grid_hist_width
+                            ).astype(np.int32)
 
-                        accumulate_sparse(
-                            sparse_store,
-                            crystal_ids,
-                            pixel_ids,
-                            x_bin,
-                            y_bin,
-                            z_bin,
-                        )
+                            accumulate_sparse(
+                                grid["sparse_store"],
+                                crystal_ids,
+                                pixel_ids,
+                                x_bin,
+                                y_bin,
+                                z_bin,
+                            )
+
+        if archive_stats_count != 1:
+            raise ValueError(
+                f"Expected exactly one *_sim_stats.txt member in {archive_path}, "
+                f"found {archive_stats_count}"
+            )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    coords = np.array(list(sparse_store.keys()), dtype=np.int32)
-    counts = np.array(list(sparse_store.values()), dtype=np.int64)
-    output_path = args.output_dir / f"{job_tag}_sparse_5d_srm.npz"
-    np.savez_compressed(
-        output_path,
-        coords=coords,
-        counts=counts,
-        hist_bins=np.array([args.hist_bins], dtype=np.int32),
-        hist_range=np.array([args.hist_min, args.hist_max], dtype=np.float32),
-        energy_min=np.array([args.energy_min], dtype=np.float32),
-        energy_max=np.array([args.energy_max], dtype=np.float32),
-        file_count=np.array([processed_files], dtype=np.int64),
-        total_events=np.array([total_events], dtype=np.int64),
-        total_sim_time=np.array([total_sim_time], dtype=np.float64),
-        processed_root_members=np.array([processed_members], dtype=np.int64),
-        job_tag=np.array([job_tag]),
-        accumulated_counts=np.array([int(counts.sum())], dtype=np.int64),
-    )
+    output_paths = []
+    for grid in grid_specs:
+        coords = np.array(list(grid["sparse_store"].keys()), dtype=np.int32)
+        counts = np.array(list(grid["sparse_store"].values()), dtype=np.int64)
+        label_suffix = f"_{grid['label']}" if grid["label"] else ""
+        output_path = args.output_dir / (
+            f"{job_tag}{label_suffix}_sparse_5d_srm.npz"
+        )
+        np.savez_compressed(
+            output_path,
+            coords=coords,
+            counts=counts,
+            simulated_events=np.array([total_events], dtype=np.int64),
+            hist_bins=np.array([grid["hist_bins"]], dtype=np.int32),
+            hist_range=np.array(
+                [grid["hist_min"], grid["hist_max"]], dtype=np.float32
+            ),
+            voxel_size=np.array([grid["hist_width"]], dtype=np.float32),
+            fov_size=np.array(
+                [grid["hist_max"] - grid["hist_min"]], dtype=np.float32
+            ),
+            energy_min=np.array([args.energy_min], dtype=np.float32),
+            energy_max=np.array([args.energy_max], dtype=np.float32),
+            file_count=np.array([processed_files], dtype=np.int64),
+            total_events=np.array([total_events], dtype=np.int64),
+            total_sim_time=np.array([total_sim_time], dtype=np.float64),
+            processed_root_members=np.array([processed_members], dtype=np.int64),
+            stats_member_count=np.array([stats_member_count], dtype=np.int64),
+            job_tag=np.array([job_tag]),
+            accumulated_counts=np.array([int(counts.sum())], dtype=np.int64),
+        )
+        output_paths.append(output_path)
 
     print(
         f"Processed {processed_files} archives, {processed_members} ROOT members, "
-        f"and wrote {len(counts)} sparse bins to {output_path}"
+        f"and wrote {len(output_paths)} SRM grids: "
+        + ", ".join(str(path) for path in output_paths)
     )
     return 0
 

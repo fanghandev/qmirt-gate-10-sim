@@ -1,5 +1,5 @@
 executable = wrapper_sparse_combine.sh
-arguments = $(input_dir) $(output_dir)
+arguments = $(input_dir) $(output_dir) $(voxel_size)
 
 +SingularityImage = "osdf:///ospool/ap40/data/fang.han/qmirt-gate-10-sim.sif"
 transfer_input_files = ../payload, ../persistent_data, ../qmirt, $(input_files)

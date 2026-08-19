@@ -1,19 +1,19 @@
 executable = wrapper_sparse_batch.sh
-arguments = $(ClusterId) $(ProcId)
+arguments = $(ClusterId) $(ProcId) $(fov_size) $(voxel_sizes)
 
 +SingularityImage = "osdf:///ospool/ap40/data/fang.han/qmirt-gate-10-sim.sif"
 transfer_input_files = ../payload, ../persistent_data, ../qmirt, $(input_files)
 
 # Keep worker outputs in the OSPool-backed data area
-transfer_output_files = job_$(ClusterId)_$(ProcId)_sparse_5d_srm.npz
-transfer_output_remaps = "job_$(ClusterId)_$(ProcId)_sparse_5d_srm.npz = $(out_dir)/sparse_5d_srm_$(ClusterId)_$(ProcId).npz"
+transfer_output_files = job_$(ClusterId)_$(ProcId)_sparse_5d_srm_outputs.tar.gz
+transfer_output_remaps = "job_$(ClusterId)_$(ProcId)_sparse_5d_srm_outputs.tar.gz = $(out_dir)/job_$(ClusterId)_$(ProcId)_sparse_5d_srm_outputs.tar.gz"
 
 log = $(log_dir)/sparse_job_$(ClusterId)_$(ProcId).log
 output = $(log_dir)/sparse_job_$(ClusterId)_$(ProcId).out
 error = $(log_dir)/sparse_job_$(ClusterId)_$(ProcId).err
 
 request_cpus = 1
-request_memory = 4GB
-request_disk = 5GB
+request_memory = 8GB
+request_disk = 10GB
 
 queue input_files from $(input_manifest)
