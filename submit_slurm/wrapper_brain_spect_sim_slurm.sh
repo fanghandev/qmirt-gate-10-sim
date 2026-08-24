@@ -13,7 +13,9 @@ fi
 CONTAINER_SIF="${CONTAINER_SIF:-${REPO_ROOT}/submit_slurm/qmirt-gate-10-sim-sif_v1.0.0.sif}"
 JOB_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}"
 TASK_ID="${SLURM_ARRAY_TASK_ID:-${SLURM_PROCID:-0}}"
-OUT_DIR="${OUTPUT_DIR:-${REPO_ROOT}/results/brain_spect/slurm/${JOB_ID}}"
+CAMPAIGN_DIR="${OUTPUT_DIR:-${REPO_ROOT}/results/brain_spect/slurm/${JOB_ID}}"
+# Array elements share CAMPAIGN_DIR, so every task write must stay under OUT_DIR.
+OUT_DIR="${CAMPAIGN_DIR}/task_${TASK_ID}"
 
 # SCRATCH_ROOT must be exported from parent submission script
 # Fail loudly if it's missing (parent script should have set it)
@@ -174,7 +176,8 @@ build_sparse_worker_command() {
 }
 
 echo "Starting SLURM job $JOB_ID task $TASK_ID..."
-echo "Output dir: $OUT_DIR"
+echo "Campaign dir: $CAMPAIGN_DIR"
+echo "Task output dir: $OUT_DIR"
 echo "Source activity: ${SOURCE_ACTIVITY_BQ} Bq"
 echo "Chunk duration: ${CHUNK_DURATION_S} s"
 echo "Num chunks: ${NUM_CHUNKS}"
@@ -212,7 +215,12 @@ run_sparse_workflow() {
             "$CHUNK_OUTPUT_DIR/srm_metadata_loop_${CURRENT_LOOP_ID}.json"
         for stats_file in "$loop_dir"/*_sim_stats.txt; do
             [[ -f "$stats_file" ]] || continue
-            cp "$stats_file" "$CHUNK_OUTPUT_DIR/$(basename "$stats_file" .txt)_loop_${CURRENT_LOOP_ID}.txt"
+            # report_campaign_progress.py globs "*_sim_stats_loop_*.txt".
+            cp "$stats_file" "$CHUNK_OUTPUT_DIR/$(basename "$stats_file" _sim_stats.txt)_sim_stats_loop_${CURRENT_LOOP_ID}.txt"
+        done
+        for manifest_file in "$loop_dir"/*_run_manifest.json; do
+            [[ -f "$manifest_file" ]] || continue
+            cp "$manifest_file" "$CHUNK_OUTPUT_DIR/$(basename "$manifest_file")"
         done
         cp "$loop_dir/resource_profile.tsv" "$CHUNK_OUTPUT_DIR/resource_profile_loop_${CURRENT_LOOP_ID}.tsv" 2>/dev/null || true
         cp "$loop_dir/resource_profile_summary.txt" "$CHUNK_OUTPUT_DIR/resource_profile_summary_loop_${CURRENT_LOOP_ID}.txt" 2>/dev/null || true
@@ -226,7 +234,8 @@ run_sparse_workflow() {
             "$REPO_ROOT/payload/python/combine_brain_sparse_srm.py"
             --input-dir "$CHUNK_OUTPUT_DIR"
             --output-dir "$OUT_DIR"
-            --expected-loops "$NUM_LOOPS"
+            --expected-inputs "$NUM_LOOPS"
+            --require-complete
         )
     else
         combine_cmd=(
@@ -234,7 +243,8 @@ run_sparse_workflow() {
             "$REPO_ROOT/payload/python/combine_brain_sparse_srm.py"
             --input-dir "$CHUNK_OUTPUT_DIR"
             --output-dir "$OUT_DIR"
-            --expected-loops "$NUM_LOOPS"
+            --expected-inputs "$NUM_LOOPS"
+            --require-complete
         )
     fi
     "${combine_cmd[@]}"

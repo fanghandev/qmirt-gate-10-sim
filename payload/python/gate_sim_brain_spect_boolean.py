@@ -462,6 +462,49 @@ def add_stats_actor(sim: gate.Simulation, output_dir: Path, output_stem: str):
     stats_actor.output_filename = str(stats_path)
 
 
+def get_repo_git_commit() -> str:
+    import subprocess
+
+    try:
+        repo_dir = Path(__file__).resolve().parent
+        commit = subprocess.run(
+            ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "-C", str(repo_dir), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        ).stdout.strip()
+        return f"{commit}{'-dirty' if dirty else ''}"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+def write_run_manifest(
+    output_dir: Path, output_stem: str, args, unique_seed: int
+) -> None:
+    """Persist the exact resolved parameters used for this task, for reproducibility."""
+    import json
+    import time
+
+    manifest = {
+        "script": Path(__file__).name,
+        "repo_git_commit": get_repo_git_commit(),
+        "generated_at": time.time(),
+        "random_seed": unique_seed,
+        "parameters": vars(args),
+    }
+    (output_dir / f"{output_stem}_run_manifest.json").write_text(
+        json.dumps(manifest, indent=2, default=str) + "\n"
+    )
+
+
 def add_actors(
     sim: gate.Simulation, n_crystals: int, output_dir: Path, output_stem: str
 ):
@@ -594,6 +637,7 @@ def run_simulation(
         output_stem,
     )
     add_stats_actor(sim, output_dir, output_stem)
+    write_run_manifest(output_dir, output_stem, args, unique_seed)
     sim.run()
 
 

@@ -35,11 +35,8 @@ python3 "payload/python/gate_sim_cardiac_spect_boolean.py" \
     -j "$CLUSTER_ID" \
     -k "$PROC_ID" \
     -n 1 \
-    -m "srm-sim" \
-    --source-type "Gamma" \
-    --fov-shape "box" \
+    --fov-shape "sphere" \
     --fov-size-mm 150.0 \
-    --with-shielding \
     -c 100 \
     -d 1.0 \
     -s 5e6

@@ -25,6 +25,18 @@ SPARSE_SRM="${SPARSE_SRM:-0}"
 SRM_FOV_SIZE_MM="${SRM_FOV_SIZE_MM:-210}"
 PROFILE_RESOURCES="${PROFILE_RESOURCES:-1}"
 PROFILE_INTERVAL_S="${PROFILE_INTERVAL_S:-5}"
+COMBINE_AFTER=0
+COMBINE_MEM_GB="64"
+COMBINE_TIME_LIMIT="2:00:00"
+COMBINE_CPUS="4"
+COMBINE_PARTITION=""
+COMBINE_GROUPS="0"
+AUTO_REPORT=0
+REPORT_INTERVAL_S="60"
+REPORT_CPUS="1"
+REPORT_MEM_GB="2"
+REPORT_TIME_LIMIT="24:00:00"
+REPORT_PARTITION=""
 
 # Initialize cluster-specific variables
 CLUSTER=""
@@ -39,6 +51,11 @@ usage() {
     echo "            [--source-activity-bq VALUE] [--chunk-duration-s VALUE] [--num-chunks N]"
     echo "            [--sparse-srm] [--num-loops N] [--srm-fov-size-mm VALUE]"
     echo "            [--profile-resources|--no-profile-resources] [--profile-interval-s SECONDS]"
+    echo "            [--combine-after] [--combine-partition PART] [--combine-cpus N] [--combine-mem-gb N] [--combine-time-limit HH:MM:SS]"
+    echo "            [--combine-groups N]  Tree reduction: merge tasks in N parallel groups before the final merge"
+    echo "            [--auto-report] [--report-interval-s SECONDS] [--report-partition PART]"
+    echo "            [--report-cpus N] [--report-mem-gb N] [--report-time-limit HH:MM:SS]"
+    echo "              Submits a small Slurm job (not a login-node process) that refreshes progress.json"
     echo "            [--test-mode] [--dry-run]"
     echo "Supported simulation types: brain, cardiac"
     echo "Supported clusters: eris, expanse, bridges2"
@@ -94,6 +111,18 @@ while [[ $# -gt 0 ]]; do
         --profile-resources) PROFILE_RESOURCES=1; shift ;;
         --no-profile-resources) PROFILE_RESOURCES=0; shift ;;
         --profile-interval-s) PROFILE_INTERVAL_S="$2"; shift 2 ;;
+        --combine-after) COMBINE_AFTER=1; shift ;;
+        --combine-mem-gb) COMBINE_MEM_GB="$2"; shift 2 ;;
+        --combine-time-limit) COMBINE_TIME_LIMIT="$2"; shift 2 ;;
+        --combine-cpus) COMBINE_CPUS="$2"; shift 2 ;;
+        --combine-partition) COMBINE_PARTITION="$2"; shift 2 ;;
+        --combine-groups) COMBINE_GROUPS="$2"; shift 2 ;;
+        --auto-report) AUTO_REPORT=1; shift ;;
+        --report-interval-s) REPORT_INTERVAL_S="$2"; shift 2 ;;
+        --report-cpus) REPORT_CPUS="$2"; shift 2 ;;
+        --report-mem-gb) REPORT_MEM_GB="$2"; shift 2 ;;
+        --report-time-limit) REPORT_TIME_LIMIT="$2"; shift 2 ;;
+        --report-partition) REPORT_PARTITION="$2"; shift 2 ;;
         --nodes)
             echo "Error: --nodes is not a user-facing option in array mode."
             echo "       Control throughput with --job-count and per-job threads with --cpus-per-task."
@@ -135,6 +164,11 @@ fi
 
 if [[ "$SPARSE_SRM" == "1" ]] && [[ "$SIM_TYPE" != "brain" ]]; then
     echo "Error: --sparse-srm is currently supported only for brain simulations."
+    exit 1
+fi
+
+if [[ "$COMBINE_AFTER" -eq 1 ]] && [[ "$SPARSE_SRM" != "1" ]]; then
+    echo "Error: --combine-after requires --sparse-srm."
     exit 1
 fi
 
@@ -235,6 +269,10 @@ if ! [[ "$PROFILE_INTERVAL_S" =~ ^[0-9]+([.][0-9]+)?$ ]] || [[ "$(awk -v interva
     echo "profile_interval_s must be a positive number"
     exit 1
 fi
+if ! [[ "$REPORT_INTERVAL_S" =~ ^[1-9][0-9]*$ ]]; then
+    echo "report_interval_s must be a positive integer"
+    exit 1
+fi
 if [[ -n "$CONCURRENT_LIMIT" ]]; then
     if ! [[ "$CONCURRENT_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
         echo "concurrent_limit must be a positive integer"
@@ -242,6 +280,31 @@ if [[ -n "$CONCURRENT_LIMIT" ]]; then
     fi
     if [[ "$CONCURRENT_LIMIT" -gt "$JOB_COUNT" ]]; then
         echo "concurrent_limit (${CONCURRENT_LIMIT}) cannot exceed job_count (${JOB_COUNT})"
+        exit 1
+    fi
+fi
+
+COMBINE_PARTITION="${COMBINE_PARTITION:-$PARTITION}"
+if [[ "$COMBINE_AFTER" -eq 1 ]]; then
+    if ! [[ "$COMBINE_CPUS" =~ ^[1-9][0-9]*$ ]]; then echo "combine_cpus must be a positive integer"; exit 1; fi
+    if ! [[ "$COMBINE_MEM_GB" =~ ^[1-9][0-9]*$ ]]; then echo "combine_mem_gb must be a positive integer"; exit 1; fi
+    if ! [[ "$COMBINE_GROUPS" =~ ^[0-9]+$ ]]; then echo "combine_groups must be a non-negative integer"; exit 1; fi
+    if [[ "$COMBINE_GROUPS" -gt "$JOB_COUNT" ]]; then
+        echo "combine_groups (${COMBINE_GROUPS}) cannot exceed job_count (${JOB_COUNT})"
+        exit 1
+    fi
+    if [[ ! " $VALID_PARTITIONS " =~ " $COMBINE_PARTITION " ]]; then
+        echo "Error: unsupported combine partition '$COMBINE_PARTITION' for cluster '$CLUSTER'"
+        exit 1
+    fi
+fi
+
+REPORT_PARTITION="${REPORT_PARTITION:-$PARTITION}"
+if [[ "$AUTO_REPORT" -eq 1 ]]; then
+    if ! [[ "$REPORT_CPUS" =~ ^[1-9][0-9]*$ ]]; then echo "report_cpus must be a positive integer"; exit 1; fi
+    if ! [[ "$REPORT_MEM_GB" =~ ^[1-9][0-9]*$ ]]; then echo "report_mem_gb must be a positive integer"; exit 1; fi
+    if [[ ! " $VALID_PARTITIONS " =~ " $REPORT_PARTITION " ]]; then
+        echo "Error: unsupported report partition '$REPORT_PARTITION' for cluster '$CLUSTER'"
         exit 1
     fi
 fi
@@ -267,7 +330,13 @@ if [[ ! -f "$CONTAINER_SIF" ]]; then
     exit 1
 fi
 
-mkdir -p "$LOG_DIR" "$DATA_DIR"
+mkdir -p "$LOG_DIR"
+if [[ "$DRY_RUN" -eq 1 ]]; then
+    # SCRATCH_ROOT may be unreachable off-cluster, so only previews skip creating it.
+    mkdir -p "$DATA_DIR" 2>/dev/null || echo "Dry run: skipping creation of $DATA_DIR"
+else
+    mkdir -p "$DATA_DIR"
+fi
 
 # Generate the sbatch file dynamically
 cat > "$SBATCH_FILE" <<EOF
@@ -321,6 +390,125 @@ export SIM_PYTHON_SCRIPT="${SIM_PYTHON_SCRIPT}"
 bash "${SIM_WRAPPER}"
 EOF
 
+COMBINE_SBATCH_FILE="${LOG_DIR}/${SIM_LABEL}_campaign_combine.sbatch"
+GROUP_SBATCH_FILE="${LOG_DIR}/${SIM_LABEL}_group_combine.sbatch"
+if [[ "$COMBINE_AFTER" -eq 1 ]]; then
+    if [[ "$COMBINE_GROUPS" -gt 1 ]]; then
+        FINAL_STAGE="groups"
+        FINAL_EXPECTED="$COMBINE_GROUPS"
+    else
+        FINAL_STAGE="tasks"
+        FINAL_EXPECTED="$JOB_COUNT"
+    fi
+
+    if [[ "$COMBINE_GROUPS" -gt 1 ]]; then
+        cat > "$GROUP_SBATCH_FILE" <<EOF
+#!/bin/bash
+#SBATCH --job-name=${SIM_LABEL}_group_combine
+#SBATCH --array=0-$((COMBINE_GROUPS - 1))
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=${COMBINE_CPUS}
+#SBATCH --time=${COMBINE_TIME_LIMIT}
+#SBATCH --mem=${COMBINE_MEM_GB}G
+#SBATCH --partition=${COMBINE_PARTITION}
+EOF
+        if [[ -n "$ACCOUNT" ]]; then
+            echo "#SBATCH --account=${ACCOUNT}" >> "$GROUP_SBATCH_FILE"
+        fi
+        cat >> "$GROUP_SBATCH_FILE" <<EOF
+#SBATCH --output=${LOG_DIR}/group_combine_%A_%a.out
+#SBATCH --error=${LOG_DIR}/group_combine_%A_%a.err
+
+export CONTAINER_SIF="${CONTAINER_SIF}"
+
+bash "${SCRIPT_DIR}/wrapper_campaign_combine.sh" \\
+    --campaign-dir "${DATA_DIR}" \\
+    --input-stage tasks \\
+    --shard-index \${SLURM_ARRAY_TASK_ID} \\
+    --shard-count ${COMBINE_GROUPS} \\
+    --output-dir "${DATA_DIR}/group_\${SLURM_ARRAY_TASK_ID}"
+EOF
+    fi
+
+    cat > "$COMBINE_SBATCH_FILE" <<EOF
+#!/bin/bash
+#SBATCH --job-name=${SIM_LABEL}_combine
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=${COMBINE_CPUS}
+#SBATCH --time=${COMBINE_TIME_LIMIT}
+#SBATCH --mem=${COMBINE_MEM_GB}G
+#SBATCH --partition=${COMBINE_PARTITION}
+EOF
+    if [[ -n "$ACCOUNT" ]]; then
+        echo "#SBATCH --account=${ACCOUNT}" >> "$COMBINE_SBATCH_FILE"
+    fi
+    cat >> "$COMBINE_SBATCH_FILE" <<EOF
+#SBATCH --output=${LOG_DIR}/combine_%j.out
+#SBATCH --error=${LOG_DIR}/combine_%j.err
+
+export CONTAINER_SIF="${CONTAINER_SIF}"
+
+bash "${SCRIPT_DIR}/wrapper_campaign_combine.sh" \\
+    --campaign-dir "${DATA_DIR}" \\
+    --input-stage ${FINAL_STAGE} \\
+    --expected-tasks ${FINAL_EXPECTED}
+EOF
+fi
+
+# Record exact provenance for this campaign: repo state, container image, and
+# every resolved simulation/scheduler parameter, so a run can be reproduced later.
+GIT_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+if [[ -n "$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null)" ]]; then
+    GIT_COMMIT="${GIT_COMMIT}-dirty"
+fi
+CONTAINER_SHA256="$(sha256sum "$CONTAINER_SIF" 2>/dev/null | cut -d' ' -f1)"
+MANIFEST_FILE="${LOG_DIR}/campaign_manifest.json"
+cat > "$MANIFEST_FILE" <<EOF
+{
+  "batch_id": "${BATCH_ID}",
+  "generated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "repo_git_commit": "${GIT_COMMIT}",
+  "container_sif": "${CONTAINER_SIF}",
+  "container_sha256": "${CONTAINER_SHA256}",
+  "sim_wrapper": "${SIM_WRAPPER}",
+  "sim_label": "${SIM_LABEL}",
+  "sim_type": "${SIM_TYPE}",
+  "sim_python_script": "${SIM_PYTHON_SCRIPT}",
+  "cluster": "${CLUSTER}",
+  "partition": "${PARTITION}",
+  "account": "${ACCOUNT}",
+  "job_count": ${JOB_COUNT},
+  "cpus_per_task": ${CPUS_PER_TASK},
+  "time_limit": "${TIME_LIMIT}",
+  "mem_gb": ${MEM_GB},
+  "concurrent_limit": "${CONCURRENT_LIMIT}",
+  "source_activity_bq": ${SOURCE_ACTIVITY_BQ},
+  "chunk_duration_s": ${CHUNK_DURATION_S},
+  "num_chunks": ${NUM_CHUNKS},
+  "num_loops": ${NUM_LOOPS},
+  "sparse_srm": ${SPARSE_SRM},
+  "srm_fov_size_mm": ${SRM_FOV_SIZE_MM},
+  "profile_resources": ${PROFILE_RESOURCES},
+  "profile_interval_s": ${PROFILE_INTERVAL_S},
+  "combine_after": ${COMBINE_AFTER},
+  "combine_groups": ${COMBINE_GROUPS},
+  "auto_report": ${AUTO_REPORT},
+  "report_interval_s": ${REPORT_INTERVAL_S},
+  "report_cpus": ${REPORT_CPUS},
+  "report_mem_gb": ${REPORT_MEM_GB},
+  "report_time_limit": "${REPORT_TIME_LIMIT}",
+  "report_partition": "${REPORT_PARTITION}",
+  "test_mode": ${TEST_MODE},
+  "data_dir": "${DATA_DIR}",
+  "log_dir": "${LOG_DIR}"
+}
+EOF
+if [[ "$DRY_RUN" -eq 0 ]]; then
+    cp "$MANIFEST_FILE" "${DATA_DIR}/campaign_manifest.json"
+fi
+
 echo "Simulation wrapper: ${SIM_WRAPPER}"
 echo "Cluster mode: ${CLUSTER}"
 echo "Simulation type: ${SIM_TYPE}"
@@ -346,11 +534,92 @@ if [[ "$TEST_MODE" -eq 1 ]]; then echo "*** TEST MODE ENABLED ***"; fi
 echo "Created output folder: $DATA_DIR"
 echo "Created log folder:    $LOG_DIR"
 echo "Created sbatch file:   $SBATCH_FILE"
+echo "Created manifest file: $MANIFEST_FILE"
+if [[ "$COMBINE_AFTER" -eq 1 ]]; then
+    echo "Campaign combine:      enabled (${COMBINE_PARTITION}, ${COMBINE_CPUS} CPUs, ${COMBINE_MEM_GB}G, ${COMBINE_TIME_LIMIT})"
+    if [[ "$COMBINE_GROUPS" -gt 1 ]]; then
+        echo "Tree reduction:        ${COMBINE_GROUPS} parallel groups, then one final merge"
+        echo "Created group file:    $GROUP_SBATCH_FILE"
+    fi
+    echo "Created combine file:  $COMBINE_SBATCH_FILE"
+fi
+if [[ "$AUTO_REPORT" -eq 1 ]]; then
+    echo "Auto report:           enabled (small Slurm job, ${REPORT_CPUS} CPU/${REPORT_MEM_GB}G/${REPORT_TIME_LIMIT} on ${REPORT_PARTITION}, refresh every ${REPORT_INTERVAL_S}s)"
+fi
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "--- sbatch file preview ---"
     cat "$SBATCH_FILE"
+    if [[ "$COMBINE_AFTER" -eq 1 ]]; then
+        if [[ "$COMBINE_GROUPS" -gt 1 ]]; then
+            echo "--- group combine sbatch preview ---"
+            cat "$GROUP_SBATCH_FILE"
+        fi
+        echo "--- campaign combine sbatch preview ---"
+        cat "$COMBINE_SBATCH_FILE"
+    fi
+    if [[ "$AUTO_REPORT" -eq 1 ]]; then
+        echo "--- progress reporter sbatch preview (job IDs are placeholders until submission) ---"
+        echo "bash ${SCRIPT_DIR}/wrapper_generate_progress_report.sh --campaign-dir ${DATA_DIR} --expected-tasks ${JOB_COUNT} --job-id <ARRAY_JOB_ID> --watch-job-id <LAST_STAGE_JOB_ID> --output ${DATA_DIR}/progress.json --interval-s ${REPORT_INTERVAL_S}"
+    fi
     exit 0
 fi
 
-sbatch "$SBATCH_FILE"
+ARRAY_JOB_ID="$(sbatch --parsable "$SBATCH_FILE")"
+echo "Submitted array job ${ARRAY_JOB_ID}"
+
+if [[ "$COMBINE_AFTER" -eq 1 ]]; then
+    # afterany: aggregate whatever succeeded rather than requiring every element to pass.
+    COMBINE_DEPENDENCY="$ARRAY_JOB_ID"
+    if [[ "$COMBINE_GROUPS" -gt 1 ]]; then
+        GROUP_JOB_ID="$(sbatch --parsable \
+            --dependency=afterany:"${ARRAY_JOB_ID}" \
+            --kill-on-invalid-dep=yes \
+            "$GROUP_SBATCH_FILE")"
+        echo "Submitted group combine array ${GROUP_JOB_ID} (afterany:${ARRAY_JOB_ID})"
+        COMBINE_DEPENDENCY="$GROUP_JOB_ID"
+    fi
+    COMBINE_JOB_ID="$(sbatch --parsable \
+        --dependency=afterany:"${COMBINE_DEPENDENCY}" \
+        --kill-on-invalid-dep=yes \
+        "$COMBINE_SBATCH_FILE")"
+    echo "Submitted campaign combine job ${COMBINE_JOB_ID} (afterany:${COMBINE_DEPENDENCY})"
+fi
+
+if [[ "$AUTO_REPORT" -eq 1 ]]; then
+    # Real job IDs are only known now, so the reporter sbatch is generated post-submission
+    # (unlike the combine sbatch files, its body must embed --job-id/--watch-job-id literally).
+    WATCH_JOB_ID="${COMBINE_JOB_ID:-$ARRAY_JOB_ID}"
+    REPORT_SBATCH_FILE="${LOG_DIR}/${SIM_LABEL}_progress_report.sbatch"
+    cat > "$REPORT_SBATCH_FILE" <<EOF
+#!/bin/bash
+#SBATCH --job-name=${SIM_LABEL}_progress_report
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=${REPORT_CPUS}
+#SBATCH --time=${REPORT_TIME_LIMIT}
+#SBATCH --mem=${REPORT_MEM_GB}G
+#SBATCH --partition=${REPORT_PARTITION}
+EOF
+    if [[ -n "$ACCOUNT" ]]; then
+        echo "#SBATCH --account=${ACCOUNT}" >> "$REPORT_SBATCH_FILE"
+    fi
+    cat >> "$REPORT_SBATCH_FILE" <<EOF
+#SBATCH --output=${LOG_DIR}/progress_report_%j.out
+#SBATCH --error=${LOG_DIR}/progress_report_%j.err
+
+export CONTAINER_SIF="${CONTAINER_SIF}"
+
+bash "${SCRIPT_DIR}/wrapper_generate_progress_report.sh" \\
+    --campaign-dir "${DATA_DIR}" \\
+    --expected-tasks ${JOB_COUNT} \\
+    --job-id ${ARRAY_JOB_ID} \\
+    --watch-job-id ${WATCH_JOB_ID} \\
+    --output "${DATA_DIR}/progress.json" \\
+    --interval-s ${REPORT_INTERVAL_S}
+EOF
+    REPORT_JOB_ID="$(sbatch --parsable "$REPORT_SBATCH_FILE")"
+    echo "Submitted progress reporter job ${REPORT_JOB_ID} (${REPORT_CPUS} CPU, ${REPORT_MEM_GB}G, ${REPORT_TIME_LIMIT}, partition ${REPORT_PARTITION}; watching job ${WATCH_JOB_ID})"
+    echo "Progress file: ${DATA_DIR}/progress.json"
+    echo "Reporter sbatch: ${REPORT_SBATCH_FILE}"
+fi

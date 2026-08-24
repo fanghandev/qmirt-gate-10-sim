@@ -120,6 +120,157 @@ bash submit_slurm/run_spect_sim_slurm.sh brain \
 
 This prints the generated `.sbatch` script without submitting it, so you can confirm the job directives, partitions, and output paths before submitting.
 
+## Running a Bridges2 production campaign with the local monitor
+
+This walks through submitting a sparse brain-SPECT campaign on Bridges2 and watching its progress from a dashboard served on your own machine (or a shared local server on your internal network).
+
+### 0. Test the workflow end-to-end with a small pilot first
+
+Before trusting the pipeline for a full production campaign, validate every stage (submission → sparse SRM → combine → progress report → dashboard) with a cheap, fast pilot:
+
+```bash
+./submit_slurm/run_spect_sim_slurm.sh brain \
+  --cluster bridges2 \
+  --account <project_id> \
+  --test-mode \
+  --sparse-srm \
+  --num-loops 2 \
+  --job-count 2 \
+  --combine-after
+```
+
+or simply:
+
+```bash
+./submit_slurm/run_spect_sim_slurm.sh brain \
+  --cluster bridges2 \
+  --test-mode \
+  --sparse-srm \
+  --num-loops 2 \
+  --job-count 2 \
+  --combine-after
+```
+
+`--test-mode` shrinks the run to `job-count=2`, `cpus-per-task=4`, `time-limit=0:30:00`, and a low source activity, so it finishes in minutes instead of hours. Once the array job and the combine job both show `COMPLETED` in `squeue`/`sacct`, confirm each stage produced what's expected:
+
+```bash
+# on Bridges2, after the jobs finish
+ls "$DATA_DIR"                                  # expect task_0/, task_1/, final_srm_*.npz, combined_srm_metadata.json, campaign_manifest.json
+cat "$DATA_DIR/campaign_manifest.json"
+ls "$DATA_DIR/task_0/srm_chunks"/*_run_manifest.json   # per-loop resolved simulation parameters
+python3 payload/python/report_campaign_progress.py \
+  --campaign-dir "$DATA_DIR" --expected-tasks 2 --output "$DATA_DIR/progress.json"
+python3 -c "import json; json.load(open('$DATA_DIR/progress.json')); print('progress.json OK')"
+```
+
+`tasks.complete` in `progress.json` should equal `2` and `srm.<label>.available` should be `true` for each resolution label. Only proceed to steps 1–6 below (or scale up `--job-count`/`--num-loops` for real production) once this pilot's `progress.json` looks correct and the local monitor (step 3–6) renders it without errors.
+
+### 1. Submit the campaign on Bridges2
+
+```bash
+./submit_slurm/run_spect_sim_slurm.sh brain \
+  --cluster bridges2 \
+  --account <project_id> \
+  --sparse-srm \
+  --job-count 100 \
+  --cpus-per-task 8 \
+  --time-limit 12:00:00 \
+  --num-loops 50 \
+  --num-chunks 10 \
+  --chunk-duration-s 1.0 \
+  --srm-fov-size-mm 210 \
+  --combine-after \
+  --combine-groups 10 \
+  --auto-report \
+  --report-interval-s 60
+```
+
+Drop `--dry-run` only after you've inspected the generated `.sbatch` file. Note the printed `DATA_DIR` (campaign output directory on Bridges2's `$PROJECT` scratch) and the `Submitted array job <ARRAY_JOB_ID>` line — you'll need both for the next step.
+
+Every submission also writes a `campaign_manifest.json` (to both the log directory and `DATA_DIR`) recording the exact repo git commit, container SIF path/SHA-256, and every resolved scheduler/simulation parameter for that batch — this is the record to keep for reproducing or auditing a production run later. Each individual Gate invocation additionally writes its own `a_<job_id>_j_<task_id>[_loop_<loop_id>]_run_manifest.json` next to its stats file, capturing the fully resolved Python simulation parameters (including the random seed) actually used for that invocation; in sparse-SRM mode these end up under `task_<id>/srm_chunks/` alongside the per-loop stats and SRM chunks.
+
+### 2. Generate a progress JSON on Bridges2
+
+`--auto-report` above submits its own small, independent Slurm job (not a login-node process — login nodes typically kill or discourage long-running background processes) that regenerates `"$DATA_DIR/progress.json"` every `--report-interval-s` seconds. By default it requests `--report-cpus 1 --report-mem-gb 2 --report-time-limit 24:00:00` on the same partition as the main job (override with `--report-partition`); increase `--report-time-limit` for campaigns expected to run longer than 24 hours. It uses `sacct`/`squeue` on the array job for queue/run timing, and stops itself (after one final refresh) once the last stage of the pipeline (the combine job, if `--combine-after` was used) leaves the queue — so its own time limit only needs to be a safety cap, not an exact estimate. Its sbatch file and `%j.out`/`%j.err` logs are under `<LOG_DIR>`, printed in the submission summary as `Submitted progress reporter job <REPORT_JOB_ID>`.
+
+If you didn't pass `--auto-report`, or want an ad hoc refresh, run the same report generator directly on the login node instead:
+
+```bash
+python3 payload/python/report_campaign_progress.py \
+  --campaign-dir "$DATA_DIR" \
+  --expected-tasks 100 \
+  --job-id <ARRAY_JOB_ID> \
+  --output "$DATA_DIR/progress.json"
+```
+
+You can also (re-)submit the same reporter job manually (e.g. to re-attach monitoring to an already-running campaign) with `sbatch --wrap='bash submit_slurm/wrapper_generate_progress_report.sh --campaign-dir "$DATA_DIR" --expected-tasks 100 --job-id <ARRAY_JOB_ID> --watch-job-id <ARRAY_JOB_ID> --output "$DATA_DIR/progress.json" --interval-s 60' --cpus-per-task=1 --mem=2G --time=24:00:00 --partition=<partition>`.
+
+**How concurrent writes to `progress.json` are avoided:** `report_campaign_progress.py` always writes to `progress.json.tmp` and then atomically renames it into place, so anything reading the file (the monitor, `cat`, `scp`) only ever sees a complete, valid JSON document — never a half-written one. That alone doesn't stop two *writer* processes from racing each other, though, so `wrapper_generate_progress_report.sh` additionally takes an `flock` lock on `<output>.reporter.lock` for as long as it runs: if a second reporter job is accidentally submitted for the same `--output` path, it prints an error and exits immediately instead of corrupting the file. A one-off manual `report_campaign_progress.py` run (not through the wrapper) isn't locked, so avoid running that by hand against the same output path while a reporter job is also active. Since every campaign gets its own `progress.json`/lock file under its own `DATA_DIR`, running several campaigns at once is safe — their reporter jobs never contend with each other.
+
+### 3. Serve the dashboard from your local server
+
+Run `serve_monitor.py` inside a `screen` session on the local server so it keeps running after you disconnect, without needing a systemd unit:
+
+```bash
+screen -S srm-monitor
+python3 monitor/serve_monitor.py \
+  --host 127.0.0.1 --port 8765 \
+  --ssh-host <bridges2-user>@data.bridges2.psc.edu \
+  --remote-json "$DATA_DIR/progress.json" \
+  --interval-s 30
+```
+
+Detach with `Ctrl-A` then `D` (the process keeps running). To check on it or stop it later:
+
+```bash
+screen -ls                 # list sessions, confirm "srm-monitor" is there
+screen -r srm-monitor       # reattach
+# inside the session: Ctrl-C to stop the server, then `exit` to close the session
+```
+
+If the server reboots, the `screen` session won't survive — you'll need to start it again the same way; there's no auto-restart unless you add one (e.g. a `@reboot` crontab entry running the same `screen -dmS srm-monitor python3 monitor/serve_monitor.py ...` command).
+
+Binding to `127.0.0.1` keeps the raw dev server off the network; only your reverse proxy (next step) should be reachable externally. This requires passwordless SSH (an `ssh-agent`/key pair) from the local server to Bridges2's data-transfer node, since it re-runs `ssh <bridges2-user>@data.bridges2.psc.edu "cat ..."` on every poll. Using `data.bridges2.psc.edu` (rather than the interactive login node) is PSC's intended host for repeated automated file transfers, and keeps this polling off the login node entirely.
+
+To test just this step with the step-0 pilot's `progress.json` before wiring up SSH, `scp` it down and point `serve_monitor.py` at the local copy first:
+
+```bash
+scp <bridges2-user>@data.bridges2.psc.edu:"$DATA_DIR/progress.json" /tmp/pilot_progress.json
+python3 monitor/serve_monitor.py --host 127.0.0.1 --port 8765 --local-json /tmp/pilot_progress.json
+curl -s http://127.0.0.1:8765/api/progress | python3 -m json.tool | head -20
+```
+
+If that renders correctly (open `http://127.0.0.1:8765` in a browser on the local server), switch to `--ssh-host`/`--remote-json` for live polling as shown above.
+
+### 4. Put nginx in front with HTTPS
+
+Add an nginx site that redirects `80 → 443` and reverse-proxies to the local `127.0.0.1:8765` monitor:
+
+```bash
+sudo mkdir -p /etc/nginx/ssl
+# copy a cert/key pair to /etc/nginx/ssl (self-signed for internal testing,
+# or one issued by your institution's internal CA for a warning-free experience)
+sudo cp /etc/nginx/sites-available/srm-monitor /etc/nginx/sites-available/srm-monitor  # edit server_name for your host
+sudo ln -s /etc/nginx/sites-available/srm-monitor /etc/nginx/sites-enabled/srm-monitor
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+See [monitor/README.md](monitor/README.md) for the exact `server { ... }` blocks (HTTP→HTTPS redirect plus the `proxy_pass http://127.0.0.1:8765;` block) and the detector pixel-mapping conventions the dashboard uses.
+
+### 5. Open the firewall
+
+```bash
+sudo ufw allow 443/tcp
+sudo ufw allow 80/tcp   # needed for the redirect to 443 to be reachable at all
+sudo ufw status verbose
+```
+
+Confirm `8765/tcp` is **not** in the allow list — it should only be reachable via nginx on `127.0.0.1`, not directly from the network.
+
+### 6. View it
+
+Browse to `https://<your-local-server-hostname>` from a machine on the same internal network/VPN. The dashboard polls `/api/progress` every 15 seconds and reflects whatever `report_campaign_progress.py` last wrote to `progress.json` on Bridges2.
+
 ## 40 trillion-event simulation plan
 
 The long-run goal is to reach a total of $4 \times 10^{13}$ simulated events. This is not a single-job target; it must be treated as a staged campaign built from many independent array chunks.

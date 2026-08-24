@@ -113,3 +113,59 @@ bash submit_slurm/run_spect_sim_slurm.sh brain \
 The default sparse outputs are `final_srm_1mm.npz`, `final_srm_1p5mm.npz`, and `final_srm_2mm.npz`. Intermediate ROOT files are placed under `${SLURM_TMPDIR}`, `${TMPDIR}`, or `SCRATCH_ROOT` and are removed only after successful conversion. Use `LOCAL_SCRATCH_ROOT` to select another node-local directory.
 
 The sparse worker currently reconstructs a Cartesian extent of `[-fov_size_mm/2, fov_size_mm/2)` while the existing simulation uses the current FOV arguments unchanged. Confirm the intended spherical source radius before production runs because the existing sphere volume and source-radius expressions do not currently use the same interpretation of `fov-size-mm`.
+
+## Detector Pixel Mapping
+
+Use this mapping whenever selecting, plotting, or interpreting a SPECT detector pixel in an SRM. Each detector module has a `25 x 25` pixel face, with pixel IDs decoded initially as:
+
+```text
+row = floor(pixel_id / 25)
+column = pixel_id % 25
+```
+
+Here, `row` and `column` are indices on the detector module face, not global
+simulation-coordinate indices. The detector face has two in-plane direction
+vectors expressed in the simulation's global XYZ coordinate system. For a
+pixel with transformed row `r` and column `c`, its center is calculated as:
+
+```text
+pixel_center_xyz = pixel_origin_xyz + (r + 0.5) * pixel_row_vector_xyz \
+                                                   + (c + 0.5) * pixel_column_vector_xyz
+```
+
+`pixel_origin_xyz`, `pixel_row_vector_xyz`, and `pixel_column_vector_xyz` are
+three-component vectors in the simulation's global `(x, y, z)` coordinates.
+The detector module can be rotated in the scanner, so increasing a row or
+column does not necessarily mean increasing global `x`, `y`, or `z`; it means
+moving along that module-face direction after the module orientation has been
+applied.
+
+The orientation transforms mean:
+
+- **Swap row and column**: exchange the two indices before calculating the
+   center. A pixel at `(row, column)` is treated as `(column, row)`.
+- **Flip row**: reverse the row numbering across the face. For a `25 x 25`
+   face, `row` becomes `24 - row`.
+- **Flip column**: reverse the column numbering across the face. For a `25 x
+   25` face, `column` becomes `24 - column`.
+
+These operations change how the stored pixel ID is displayed and mapped to the
+geometry; they do not modify the pixel ID or the SRM data. Apply the transforms
+in this order: swap, then flip the row and column independently.
+
+For the current SPECT geometry, the physically correct displayed orientation applies all three transforms:
+
+- swap row and column
+- flip the row
+- flip the column
+
+These transforms are the default display mapping in the SRM monitor and should also be applied by other pixel-level analysis or visualization tools unless they explicitly use an un-oriented detector coordinate frame. The mapping affects display and geometry lookup; it does not change the stored SRM pixel ID.
+
+SRM detector module IDs are one-based (`1, 2, 3, ...`). Gate geometry exports use one-based solid IDs, while the progress report's `crystal_id` field is zero-based (`0, 1, 2, ...`). To associate an SRM module with a report geometry record, use:
+
+```text
+geometry.crystal_id = srm_module_id - 1
+geometry.solid_id = srm_module_id
+```
+
+Keeping these two ID conventions separate prevents the detector outline, selected pixel center, and central-ray overlay from being shifted to the neighboring module.

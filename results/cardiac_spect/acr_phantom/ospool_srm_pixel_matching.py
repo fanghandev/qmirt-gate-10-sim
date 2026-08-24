@@ -68,23 +68,28 @@ def add_mesh_sharp_edges(axs, mesh, *, color="red", linewidth=1.5, alpha=1.0):
                 alpha=alpha,
             )
 
-    # 1. XY Projection (Drop Z)
+    # 1. XY Projection (drop Z)
     draw_wireframe(axs[0], v[:, [0, 1]])
 
-    # 2. XZ Projection (Drop Y)
-    draw_wireframe(axs[1], v[:, [0, 2]])
+    # 2. YZ Projection (drop X)
+    draw_wireframe(axs[1], v[:, [1, 2]])
 
-    # 3. YZ Projection (Drop X)
-    draw_wireframe(axs[2], v[:, [1, 2]])
+    # 3. ZX Projection (drop Y), with Z on the horizontal axis
+    draw_wireframe(axs[2], v[:, [2, 0]])
 
 
 def plot_sparse_3d_projections(
     srm_crystal_sparse, id=1, *, prefix: str = "Crystal", fov_size_mm=(100, 100, 100)
 ):
 
-    # Calculate the projections
-    projections = [srm_crystal_sparse.sum(axis=2 - i).todense() for i in range(3)]
-    extent_indices = [(0, 1), (0, 2), (1, 2)]
+    # Calculate the three orthogonal projections in a consistent XY / YZ / ZX order.
+    # The ZX view keeps Z on the horizontal axis to match the monitor dashboard.
+    projections = [
+        srm_crystal_sparse.sum(axis=2).todense(),  # XY: sum over Z
+        srm_crystal_sparse.sum(axis=0).todense(),  # YZ: sum over X
+        srm_crystal_sparse.sum(axis=1).todense(),  # ZX: sum over Y
+    ]
+    extent_indices = [(0, 1), (1, 2), (2, 0)]
     extents = [
         (
             -fov_size_mm[extent_indices[i][0]] * 0.5,
@@ -94,8 +99,8 @@ def plot_sparse_3d_projections(
         )
         for i in range(3)
     ]
-    axes_titles = ["XY Projection", "XZ Projection", "YZ Projection"]
-    axis_labels = [("X-axis", "Y-axis"), ("X-axis", "Z-axis"), ("Y-axis", "Z-axis")]
+    axes_titles = ["XY Projection", "YZ Projection", "ZX Projection"]
+    axis_labels = [("X-axis", "Y-axis"), ("Y-axis", "Z-axis"), ("Z-axis", "X-axis")]
 
     # Create a figure with 3 subplots
     fig, axs = plt.subplots(1, 3, figsize=(20, 5))

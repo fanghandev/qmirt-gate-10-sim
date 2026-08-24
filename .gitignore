@@ -234,3 +234,7 @@ results/cardiac_spect/data
 
 # Apptainer
 *.sif
+**/local_sim/
+**/local_array_test/
+**/local_sparse_test/
+**/dashboard_demo/
