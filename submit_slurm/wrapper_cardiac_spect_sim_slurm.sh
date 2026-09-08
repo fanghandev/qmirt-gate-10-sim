@@ -7,8 +7,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 if command -v module >/dev/null 2>&1; then
-    module load Apptainer 2>/dev/null || true
+    # Expanse ships singularitypro rather than Apptainer.
+    module load Apptainer 2>/dev/null || module load singularitypro 2>/dev/null || true
 fi
+CONTAINER_EXEC="$(command -v apptainer || command -v singularity || true)"
 
 CONTAINER_SIF="${CONTAINER_SIF:-${REPO_ROOT}/submit_slurm/qmirt-gate-10-sim-sif_v1.0.0.sif}"
 JOB_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}"
@@ -56,9 +58,9 @@ mkdir -p "$OUT_DIR"
 
 TASK_START_TS="$(date +%s)"
 
-if command -v apptainer >/dev/null 2>&1; then
+if [[ -n "$CONTAINER_EXEC" ]]; then
     APPTAINER_CMD=(
-        apptainer exec
+        "$CONTAINER_EXEC" exec
         --bind "${SCRATCH_ROOT}:${SCRATCH_ROOT}"
         --bind "$REPO_ROOT:$REPO_ROOT"
         "$CONTAINER_SIF"

@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh QMIRT campaign progress from the mounted cluster filesystem
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/share/micromamba/envs/opengate/bin:/usr/local/bin:/usr/bin:/bin
+# Mount-only refresh: no Globus task is created, so this can poll frequently.
+ExecStart=%h/.local/share/micromamba/envs/opengate/bin/python3 %h/Work/RPIL/QMIRT/qmirt-gate-10-sim/payload/python/globus_pull_campaign.py --config %h/Work/RPIL/QMIRT/qmirt-gate-10-sim/submit_slurm/globus.env --progress-only

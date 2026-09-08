@@ -9,8 +9,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 if command -v module >/dev/null 2>&1; then
-    module load Apptainer 2>/dev/null || true
+    module load Apptainer 2>/dev/null || module load singularitypro 2>/dev/null || true
 fi
+CONTAINER_EXEC="$(command -v apptainer || command -v singularity || true)"
 
 CONTAINER_SIF="${CONTAINER_SIF:-${REPO_ROOT}/submit_slurm/qmirt-gate-10-sim-sif_v1.0.0.sif}"
 CAMPAIGN_DIR="${CAMPAIGN_DIR:-}"
@@ -73,8 +74,8 @@ report_cmd=(python3 "$REPO_ROOT/payload/python/report_campaign_progress.py"
 [[ -n "$JOB_ID" ]] && report_cmd+=(--job-id "$JOB_ID")
 [[ -n "$GEOMETRY_WRL" ]] && report_cmd+=(--geometry-wrl "$GEOMETRY_WRL")
 
-if [[ -f "$CONTAINER_SIF" ]] && command -v apptainer >/dev/null 2>&1; then
-    report_cmd=(apptainer exec --bind "$REPO_ROOT:$REPO_ROOT" --bind "$CAMPAIGN_DIR:$CAMPAIGN_DIR" \
+if [[ -f "$CONTAINER_SIF" ]] && [[ -n "$CONTAINER_EXEC" ]]; then
+    report_cmd=("$CONTAINER_EXEC" exec --bind "$REPO_ROOT:$REPO_ROOT" --bind "$CAMPAIGN_DIR:$CAMPAIGN_DIR" \
         "$CONTAINER_SIF" "${report_cmd[@]}")
 fi
 

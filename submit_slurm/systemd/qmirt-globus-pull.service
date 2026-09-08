@@ -1,0 +1,11 @@
+[Unit]
+Description=Pull completed QMIRT SRM tasks from the cluster via Globus
+After=network-online.target globus-connect-personal.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# numpy and the globus CLI both live in the opengate micromamba env.
+Environment=PATH=%h/.local/share/micromamba/envs/opengate/bin:/usr/local/bin:/usr/bin:/bin
+# Edit the config path per campaign; add --purge-after-pull once you trust the pipeline.
+ExecStart=%h/.local/share/micromamba/envs/opengate/bin/python3 %h/Work/RPIL/QMIRT/qmirt-gate-10-sim/payload/python/globus_pull_campaign.py --config %h/Work/RPIL/QMIRT/qmirt-gate-10-sim/submit_slurm/globus.env --combine-after-pull --report-after-pull

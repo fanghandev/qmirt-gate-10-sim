@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically pull completed QMIRT SRM tasks via Globus
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -3,6 +3,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Globus endpoint/path configuration (site-specific)
+submit_slurm/globus.env
+
 # C extensions
 *.so
 

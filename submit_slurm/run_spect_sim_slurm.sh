@@ -43,13 +43,18 @@ CLUSTER=""
 ACCOUNT=""
 PARTITION=""
 CONCURRENT_LIMIT=""
+PROJECT_DIR=""
+# Node-local scratch template, expanded inside the generated sbatch (per array element).
+LOCAL_SCRATCH_TEMPLATE=""
 
 usage() {
     echo "Usage: $0 [brain|cardiac|/path/to/wrapper.sh] [job_count] [cpus_per_task] [time_limit] [mem_gb]"
     echo "  or:    $0 [--wrapper /path/to/wrapper.sh] [--job-count N] [--cpus-per-task N] [--time-limit HH:MM:SS] [--mem-gb N]"
-    echo "            [--partition PART] [--account ALLOCATION_ID] [--cluster eris|expanse|bridges2] [--concurrent-limit LIMIT]"
+    echo "            [--partition PART] [--account ALLOCATION_ID] [--cluster expanse|eris|bridges2] [--concurrent-limit LIMIT]"
+    echo "            [--project-dir PATH]  Shared campaign root; on Expanse defaults to /expanse/lustre/projects/<group>/\$USER"
     echo "            [--source-activity-bq VALUE] [--chunk-duration-s VALUE] [--num-chunks N]"
-    echo "            [--sparse-srm] [--num-loops N] [--srm-fov-size-mm VALUE]"
+    echo "            [--sparse-srm|--no-sparse-srm] [--num-loops N] [--srm-fov-size-mm VALUE]"
+    echo "              Sparse SRM is on by default for brain simulations."
     echo "            [--profile-resources|--no-profile-resources] [--profile-interval-s SECONDS]"
     echo "            [--combine-after] [--combine-partition PART] [--combine-cpus N] [--combine-mem-gb N] [--combine-time-limit HH:MM:SS]"
     echo "            [--combine-groups N]  Tree reduction: merge tasks in N parallel groups before the final merge"
@@ -58,7 +63,7 @@ usage() {
     echo "              Submits a small Slurm job (not a login-node process) that refreshes progress.json"
     echo "            [--test-mode] [--dry-run]"
     echo "Supported simulation types: brain, cardiac"
-    echo "Supported clusters: eris, expanse, bridges2"
+    echo "Supported clusters: expanse (default), eris, bridges2"
     echo ""
     echo "Array allocation (always one node/task per simulation):"
     echo "  --job-count N          Number of array jobs (independent simulations)"
@@ -101,11 +106,13 @@ while [[ $# -gt 0 ]]; do
         --partition) PARTITION="$2"; shift 2 ;;
         --account|-A) ACCOUNT="$2"; shift 2 ;;
         --cluster) CLUSTER="$2"; shift 2 ;;
+        --project-dir) PROJECT_DIR="$2"; shift 2 ;;
         --concurrent-limit) CONCURRENT_LIMIT="$2"; shift 2 ;;
         --source-activity-bq) SOURCE_ACTIVITY_BQ="$2"; shift 2 ;;
         --chunk-duration-s) CHUNK_DURATION_S="$2"; shift 2 ;;
         --num-chunks) NUM_CHUNKS="$2"; shift 2 ;;
-        --sparse-srm) SPARSE_SRM=1; shift ;;
+        --sparse-srm) SPARSE_SRM=1; SPARSE_SRM_SET=1; shift ;;
+        --no-sparse-srm) SPARSE_SRM=0; SPARSE_SRM_SET=1; shift ;;
         --num-loops) NUM_LOOPS="$2"; shift 2 ;;
         --srm-fov-size-mm) SRM_FOV_SIZE_MM="$2"; shift 2 ;;
         --profile-resources) PROFILE_RESOURCES=1; shift ;;
@@ -162,6 +169,11 @@ if [[ "$TEST_MODE" -eq 1 ]]; then
     SOURCE_ACTIVITY_BQ=1e4
 fi
 
+# Brain campaigns are sparse-SRM by default; every task must emit a partial SRM.
+if [[ -z "${SPARSE_SRM_SET:-}" ]] && [[ "$SIM_TYPE" == "brain" ]]; then
+    SPARSE_SRM=1
+fi
+
 if [[ "$SPARSE_SRM" == "1" ]] && [[ "$SIM_TYPE" != "brain" ]]; then
     echo "Error: --sparse-srm is currently supported only for brain simulations."
     exit 1
@@ -179,22 +191,39 @@ if [[ -z "$CLUSTER" ]]; then
         CLUSTER="expanse"
     elif [[ "$HOSTNAME" == *"bridges"* ]]; then
         CLUSTER="bridges2"
-    else
+    elif [[ "$HOSTNAME" == *"eris"* ]]; then
         CLUSTER="eris"
+    else
+        CLUSTER="expanse"
     fi
 fi
 
 if [[ "$CLUSTER" == "expanse" ]]; then
-    VALID_PARTITIONS="compute shared debug"
+    VALID_PARTITIONS="compute shared large-shared debug preempt ind-compute ind-shared"
     PARTITION="${PARTITION:-shared}"
-    
+    # Expanse does not set SLURM_TMPDIR; this is its per-job node-local NVMe path.
+    LOCAL_SCRATCH_TEMPLATE='/scratch/${USER}/job_${SLURM_JOB_ID}'
+
     if [[ -z "$ACCOUNT" ]]; then
-        echo "Error: --account (-A) is required on ACCESS Expanse (e.g., -A med123456)"
+        echo "Error: --account (-A) is required on ACCESS Expanse (e.g., -A mde260019)"
         exit 1
     fi
-    
-    # Use Expanse's Lustre scratch file system based on the allocation account
-    SCRATCH_ROOT="/expanse/lustre/projects/${ACCOUNT}/${USER}"
+
+    # The Lustre projects directory is named after the SDSC unix group, which is a
+    # different string from the Slurm account (e.g. account mde260019 -> group mgh102).
+    if [[ -z "$PROJECT_DIR" ]]; then
+        PROJECT_DIR="$(ls -d /expanse/lustre/projects/*/"${USER}" 2>/dev/null | head -n 1 || true)"
+    fi
+    if [[ -n "$PROJECT_DIR" ]]; then
+        SCRATCH_ROOT="$PROJECT_DIR"
+    elif [[ "$DRY_RUN" -eq 1 ]]; then
+        SCRATCH_ROOT="${HOME}/scratch/qmirt-expanse"
+        echo "Warning: Expanse projects directory not visible from this host; using local preview path ${SCRATCH_ROOT} for dry-run only."
+    else
+        echo "Error: could not resolve the Expanse projects directory for ${USER}."
+        echo "       Pass --project-dir /expanse/lustre/projects/<group>/${USER} (find <group> with 'id -Gn')."
+        exit 1
+    fi
 
 elif [[ "$CLUSTER" == "bridges2" ]]; then
     VALID_PARTITIONS="RM RM-512 RM-shared RM-small GPU GPU-shared GPU-small EM ROBO ROBO-8 HACC GPU-dev applications"
@@ -251,6 +280,25 @@ if [[ -z "${MEM_GB_SET:-}" ]] && [[ "$CPUS_PER_TASK" -ge 64 ]] && [[ "$TEST_MODE
             echo "Auto-adjusted memory to ${MEM_GB}GB for high-thread jobs on ${CLUSTER}"
             ;;
     esac
+fi
+
+# Expanse shared partitions allocate roughly 2G of memory per requested core.
+if [[ "$CLUSTER" == "expanse" ]] && [[ "$PARTITION" == "shared" || "$PARTITION" == "ind-shared" || "$PARTITION" == "large-shared" ]]; then
+    if [[ "$PARTITION" == "large-shared" ]]; then
+        MEM_PER_CPU_CAP_GB=15
+    else
+        MEM_PER_CPU_CAP_GB=2
+    fi
+    SHARED_MEM_CAP_GB=$(( CPUS_PER_TASK * MEM_PER_CPU_CAP_GB ))
+    if [[ "$MEM_GB" -gt "$SHARED_MEM_CAP_GB" ]]; then
+        if [[ -n "${MEM_GB_SET:-}" ]]; then
+            echo "Error: --mem-gb ${MEM_GB} exceeds the Expanse ${PARTITION} limit of ~${MEM_PER_CPU_CAP_GB}G per core (${SHARED_MEM_CAP_GB}G for ${CPUS_PER_TASK} CPUs)."
+            echo "       Raise --cpus-per-task, lower --mem-gb, or use --partition compute."
+            exit 1
+        fi
+        MEM_GB="$SHARED_MEM_CAP_GB"
+        echo "Capped memory to ${MEM_GB}GB for Expanse ${PARTITION} (~${MEM_PER_CPU_CAP_GB}G per core)"
+    fi
 fi
 
 if ! [[ "$JOB_COUNT" =~ ^[1-9][0-9]*$ ]]; then echo "job_count must be a positive integer"; exit 1; fi
@@ -386,6 +434,14 @@ export PROFILE_RESOURCES="${PROFILE_RESOURCES}"
 export PROFILE_INTERVAL_S="${PROFILE_INTERVAL_S}"
 export SIM_TYPE="${SIM_TYPE}"
 export SIM_PYTHON_SCRIPT="${SIM_PYTHON_SCRIPT}"
+EOF
+
+if [[ -n "$LOCAL_SCRATCH_TEMPLATE" ]]; then
+    # Written unexpanded on purpose: resolved per array element at run time.
+    echo "export LOCAL_SCRATCH_ROOT=\"${LOCAL_SCRATCH_TEMPLATE}\"" >> "$SBATCH_FILE"
+fi
+
+cat >> "$SBATCH_FILE" <<EOF
 
 bash "${SIM_WRAPPER}"
 EOF
@@ -501,6 +557,8 @@ cat > "$MANIFEST_FILE" <<EOF
   "report_time_limit": "${REPORT_TIME_LIMIT}",
   "report_partition": "${REPORT_PARTITION}",
   "test_mode": ${TEST_MODE},
+  "scratch_root": "${SCRATCH_ROOT}",
+  "local_scratch_template": "${LOCAL_SCRATCH_TEMPLATE}",
   "data_dir": "${DATA_DIR}",
   "log_dir": "${LOG_DIR}"
 }
@@ -522,6 +580,8 @@ echo "Time limit: ${TIME_LIMIT}"
 echo "Memory: ${MEM_GB}G"
 echo "Partition: ${PARTITION}"
 if [[ -n "$ACCOUNT" ]]; then echo "Account: ${ACCOUNT}"; fi
+echo "Shared campaign root: ${SCRATCH_ROOT}"
+if [[ -n "$LOCAL_SCRATCH_TEMPLATE" ]]; then echo "Node-local scratch: ${LOCAL_SCRATCH_TEMPLATE}"; fi
 echo "Source activity: ${SOURCE_ACTIVITY_BQ} Bq"
 echo "Chunk duration: ${CHUNK_DURATION_S} s"
 echo "Num chunks: ${NUM_CHUNKS}"

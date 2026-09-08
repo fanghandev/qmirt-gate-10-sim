@@ -7,8 +7,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 if command -v module >/dev/null 2>&1; then
-    module load Apptainer 2>/dev/null || true
+    # Expanse ships singularitypro rather than Apptainer.
+    module load Apptainer 2>/dev/null || module load singularitypro 2>/dev/null || true
 fi
+CONTAINER_EXEC="$(command -v apptainer || command -v singularity || true)"
 
 CONTAINER_SIF="${CONTAINER_SIF:-${REPO_ROOT}/submit_slurm/qmirt-gate-10-sim-sif_v1.0.0.sif}"
 JOB_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}"
@@ -48,6 +50,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --sparse-srm) SPARSE_SRM=1; shift ;;
+        --no-sparse-srm) SPARSE_SRM=0; shift ;;
         --num-loops)
             [[ $# -ge 2 ]] || { echo "Missing value for --num-loops" >&2; exit 2; }
             NUM_LOOPS="$2"
@@ -59,7 +62,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --help|-h)
-            echo "Usage: $0 [--sparse-srm] [--num-loops N] [--srm-fov-size-mm VALUE] [--profile-resources|--no-profile-resources] [--profile-interval-s SECONDS]"
+            echo "Usage: $0 [--sparse-srm|--no-sparse-srm] [--num-loops N] [--srm-fov-size-mm VALUE] [--profile-resources|--no-profile-resources] [--profile-interval-s SECONDS]"
             exit 0
             ;;
         *)
@@ -101,9 +104,9 @@ fi
 
 TASK_START_TS="$(date +%s)"
 
-if command -v apptainer >/dev/null 2>&1; then
+if [[ -n "$CONTAINER_EXEC" ]]; then
     APPTAINER_CMD=(
-        apptainer exec
+        "$CONTAINER_EXEC" exec
         --bind "${SCRATCH_ROOT}:${SCRATCH_ROOT}"
         --bind "$REPO_ROOT:$REPO_ROOT"
         --bind "$LOCAL_RUN_ROOT:$LOCAL_RUN_ROOT"
@@ -184,6 +187,39 @@ echo "Num chunks: ${NUM_CHUNKS}"
 echo "Sparse SRM mode: ${SPARSE_SRM}"
 echo "Num loops: ${NUM_LOOPS}"
 
+# Sole signal that a task's outputs are complete and safe for the workstation to pull.
+write_task_complete_marker() {
+    local marker="${OUT_DIR}/TASK_COMPLETE.json"
+    local marker_tmp="${marker}.tmp"
+    local first=1
+    {
+        printf '{\n'
+        printf '  "job_id": "%s",\n' "$JOB_ID"
+        printf '  "task_id": "%s",\n' "$TASK_ID"
+        printf '  "num_loops": %s,\n' "$NUM_LOOPS"
+        printf '  "completed_at": "%s",\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf '  "files": {\n'
+        for srm_file in "$OUT_DIR"/final_srm_*.npz; do
+            [[ -f "$srm_file" ]] || continue
+            [[ "$first" -eq 1 ]] || printf ',\n'
+            first=0
+            printf '    "%s": {"sha256": "%s", "size_bytes": %s}' \
+                "$(basename "$srm_file")" \
+                "$(sha256sum "$srm_file" | cut -d' ' -f1)" \
+                "$(stat -c %s "$srm_file")"
+        done
+        printf '\n  }\n}\n'
+    } > "$marker_tmp"
+
+    if [[ "$first" -eq 1 ]]; then
+        echo "Error: no final_srm_*.npz found in $OUT_DIR; not marking task complete." >&2
+        rm -f "$marker_tmp"
+        return 1
+    fi
+    mv "$marker_tmp" "$marker"
+    echo "Wrote completion marker: $marker"
+}
+
 run_sparse_workflow() {
     for ((loop_index = 0; loop_index < NUM_LOOPS; loop_index++)); do
         CURRENT_LOOP_ID="$(printf '%05d' "$loop_index")"
@@ -248,6 +284,7 @@ run_sparse_workflow() {
         )
     fi
     "${combine_cmd[@]}"
+    write_task_complete_marker
 }
 
 if [[ "$SPARSE_SRM" == "1" ]]; then

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import posixpath
 import shlex
 import subprocess
 import sys
@@ -68,7 +69,7 @@ def poll_loop(cache: ProgressCache, interval_s: float, stop: threading.Event) ->
         stop.wait(interval_s)
 
 
-def make_handler(cache: ProgressCache):
+def make_handler(cache: ProgressCache, ssh_host: str | None, remote_repo_root: str | None):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args) -> None:  # keep the console quiet
             pass
@@ -112,24 +113,52 @@ def make_handler(cache: ProgressCache):
                 )
                 return
 
-            command = [
-                sys.executable,
-                str(
-                    STATIC_DIR.parent
-                    / "payload"
-                    / "python"
-                    / "report_campaign_progress.py"
-                ),
-                "--pixel-query",
-                "--srm-dir",
-                str(Path(srm_path).parent),
-                "--srm-labels",
-                label,
-                "--crystal",
-                str(crystal),
-                "--pixel",
-                str(pixel),
-            ]
+            if ssh_host:
+                # progress.json was fetched over SSH, so srm_path is a path on the
+                # remote host, not this machine — the .npz itself was never copied here.
+                if not remote_repo_root:
+                    self._send_json(
+                        501,
+                        {
+                            "available": False,
+                            "error": (
+                                "Pixel queries need --remote-repo-root when using "
+                                "--ssh-host, so report_campaign_progress.py can be run "
+                                "on the remote host against its own filesystem."
+                            ),
+                        },
+                    )
+                    return
+                remote_srm_dir = posixpath.dirname(srm_path)
+                remote_script = posixpath.join(
+                    remote_repo_root, "payload", "python", "report_campaign_progress.py"
+                )
+                remote_cmd = (
+                    f"python3 {shlex.quote(remote_script)} --pixel-query "
+                    f"--srm-dir {shlex.quote(remote_srm_dir)} "
+                    f"--srm-labels {shlex.quote(label)} "
+                    f"--crystal {crystal} --pixel {pixel}"
+                )
+                command = ["ssh", "-C", ssh_host, remote_cmd]
+            else:
+                command = [
+                    sys.executable,
+                    str(
+                        STATIC_DIR.parent
+                        / "payload"
+                        / "python"
+                        / "report_campaign_progress.py"
+                    ),
+                    "--pixel-query",
+                    "--srm-dir",
+                    str(Path(srm_path).parent),
+                    "--srm-labels",
+                    label,
+                    "--crystal",
+                    str(crystal),
+                    "--pixel",
+                    str(pixel),
+                ]
             try:
                 completed = subprocess.run(
                     command,
@@ -186,6 +215,14 @@ def parse_args() -> argparse.Namespace:
         "--remote-json",
         help="Path to the progress JSON on the SSH host (with --ssh-host).",
     )
+    parser.add_argument(
+        "--remote-repo-root",
+        help=(
+            "Path to this repo's root on the SSH host (with --ssh-host), so pixel-level "
+            "queries can run report_campaign_progress.py remotely against the actual "
+            ".npz files instead of failing with 'SRM not found' on this machine."
+        ),
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--interval-s", type=float, default=30.0)
@@ -216,7 +253,9 @@ def main() -> int:
     )
     thread.start()
 
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(cache))
+    server = ThreadingHTTPServer(
+        (args.host, args.port), make_handler(cache, args.ssh_host, args.remote_repo_root)
+    )
     print(f"SRM monitor on http://{args.host}:{args.port} (poll {args.interval_s}s)")
     if fetch_command:
         print("Fetch:", " ".join(fetch_command))

@@ -41,8 +41,8 @@ Use the main submission helper in `submit_slurm/run_spect_sim_slurm.sh` from the
 
 1. Pick the simulation type: `brain` or `cardiac`.
 2. Set the cluster and account as needed:
+   - Expanse (default): `--account <slurm_account>`. The Lustre projects directory is named after your SDSC unix group (`id -Gn`), not the Slurm account, and is resolved automatically; override with `--project-dir` when running off-cluster.
    - ERIS: `--cluster eris`
-   - Expanse: `--cluster expanse --account <project_id>`
    - Bridges2: `--cluster bridges2` and rely on the system-provided `PROJECT` variable when available; `PROJECT` is already the project root path (for example `/ocean/projects/med260005p/fhan1`), so do not append `${USER}` again.
 3. Use `--dry-run` first to inspect the generated `.sbatch` file before submitting.
 4. The helper creates a dated log folder and a scratch/output directory, then submits the job with `sbatch`.
@@ -52,9 +52,9 @@ Use the main submission helper in `submit_slurm/run_spect_sim_slurm.sh` from the
 ### Examples
 
 ```bash
-./submit_slurm/run_spect_sim_slurm.sh brain --cluster bridges2 --account <project_id> --dry-run
-./submit_slurm/run_spect_sim_slurm.sh brain --cluster bridges2 --test-mode --nodes 1 --dry-run
-./submit_slurm/run_spect_sim_slurm.sh brain --job-count 20 --cpus-per-task 4 --time-limit 04:00:00 --mem-gb 16 --dry-run
+./submit_slurm/run_spect_sim_slurm.sh brain --account <slurm_account> --dry-run
+./submit_slurm/run_spect_sim_slurm.sh brain --account <slurm_account> --test-mode --dry-run
+./submit_slurm/run_spect_sim_slurm.sh brain --job-count 20 --cpus-per-task 4 --time-limit 04:00:00 --mem-gb 8 --dry-run
 ```
 
 The wrapper script forwards SLURM job metadata to the Python entrypoint and passes `-n ${SLURM_CPUS_PER_TASK:-1}` so GATE can use multithreading when the request includes more than one CPU per task.
@@ -143,11 +143,11 @@ applied.
 The orientation transforms mean:
 
 - **Swap row and column**: exchange the two indices before calculating the
-   center. A pixel at `(row, column)` is treated as `(column, row)`.
+  center. A pixel at `(row, column)` is treated as `(column, row)`.
 - **Flip row**: reverse the row numbering across the face. For a `25 x 25`
-   face, `row` becomes `24 - row`.
+  face, `row` becomes `24 - row`.
 - **Flip column**: reverse the column numbering across the face. For a `25 x
-   25` face, `column` becomes `24 - column`.
+ 25` face, `column` becomes `24 - column`.
 
 These operations change how the stored pixel ID is displayed and mapped to the
 geometry; they do not modify the pixel ID or the SRM data. Apply the transforms

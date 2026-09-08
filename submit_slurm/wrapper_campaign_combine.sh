@@ -7,8 +7,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 if command -v module >/dev/null 2>&1; then
-    module load Apptainer 2>/dev/null || true
+    # Expanse ships singularitypro rather than Apptainer.
+    module load Apptainer 2>/dev/null || module load singularitypro 2>/dev/null || true
 fi
+CONTAINER_EXEC="$(command -v apptainer || command -v singularity || true)"
 
 CONTAINER_SIF="${CONTAINER_SIF:-${REPO_ROOT}/submit_slurm/qmirt-gate-10-sim-sif_v1.0.0.sif}"
 CAMPAIGN_DIR="${CAMPAIGN_DIR:-${OUTPUT_DIR:-}}"
@@ -137,8 +139,8 @@ if [[ "$REQUIRE_COMPLETE" == "1" ]]; then
     combine_cmd+=(--require-complete)
 fi
 
-if [[ -f "$CONTAINER_SIF" ]] && command -v apptainer >/dev/null 2>&1; then
-    apptainer exec \
+if [[ -f "$CONTAINER_SIF" ]] && [[ -n "$CONTAINER_EXEC" ]]; then
+    "$CONTAINER_EXEC" exec \
         --bind "$REPO_ROOT:$REPO_ROOT" \
         --bind "$CAMPAIGN_DIR:$CAMPAIGN_DIR" \
         --bind "$COMBINE_OUTPUT_DIR:$COMBINE_OUTPUT_DIR" \

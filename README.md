@@ -38,14 +38,14 @@ Use the helper in [submit_slurm/run_spect_sim_slurm.sh](submit_slurm/run_spect_s
 From the repository root:
 
 ```bash
-./submit_slurm/run_spect_sim_slurm.sh brain --cluster bridges2 --account <project_id> --dry-run
-./submit_slurm/run_spect_sim_slurm.sh cardiac --cluster expanse --account <project_id> --dry-run
+./submit_slurm/run_spect_sim_slurm.sh brain --account <slurm_account> --dry-run
+./submit_slurm/run_spect_sim_slurm.sh cardiac --cluster expanse --account <slurm_account> --dry-run
 ./submit_slurm/run_spect_sim_slurm.sh brain --cluster eris --dry-run
 ```
 
 The script:
 
-- auto-detects the cluster from `hostname` when `--cluster` is omitted
+- auto-detects the cluster from `hostname` when `--cluster` is omitted, defaulting to `expanse`
 - validates supported partitions for the selected cluster
 - creates a dated log directory and a per-batch scratch/output directory
 - generates a `.sbatch` file and submits it with `sbatch`
@@ -53,9 +53,16 @@ The script:
 
 ### Cluster-specific notes
 
+- `expanse` (default): requires `--account`. The Lustre projects directory is named after your
+  SDSC unix group, which is **not** the same string as the Slurm account (for example, account
+  `mde260019` maps to group `mgh102`). The script resolves it automatically with
+  `ls -d /expanse/lustre/projects/*/$USER`; override with `--project-dir` when running off-cluster.
+  ROOT files go to the node-local NVMe at `/scratch/$USER/job_$SLURM_JOB_ID` (Expanse does not set
+  `SLURM_TMPDIR`). On `shared`/`shared-preempt` the requested memory is capped at ~2 GB per core.
 - `eris`: uses `/scratch/f/fh890` and default partition `normal`
-- `expanse`: requires `--account` and uses `/expanse/lustre/projects/${ACCOUNT}/${USER}`
 - `bridges2`: uses the system-provided `PROJECT` environment variable when available; `PROJECT` is already the project root path (for example `/ocean/projects/med260005p/fhan1`), so the script uses it directly and does not append `${USER}` again
+
+`eris` and `bridges2` remain supported but are no longer the clusters this workflow is exercised on.
 
 ### Job-array mode (default)
 
@@ -64,9 +71,9 @@ The script:
   --job-count 20 \
   --cpus-per-task 4 \
   --time-limit 04:00:00 \
-  --mem-gb 16 \
-  --account <project_id> \
-  --partition RM
+  --mem-gb 8 \
+  --account <slurm_account> \
+  --partition shared
 ```
 
 This submits a SLURM array job and each task runs with its own task ID and output directory.
@@ -77,8 +84,8 @@ If you want one task per node with multithreading enabled for the full node, use
 
 ```bash
 ./submit_slurm/run_spect_sim_slurm.sh brain \
-  --cluster bridges2 \
-  --account <project_id> \
+  --account <slurm_account> \
+  --partition compute \
   --nodes 2
 ```
 
@@ -87,18 +94,17 @@ This requests whole-node allocation with one task per node and sets `--cpus-per-
 ### Test mode
 
 ```bash
-./submit_slurm/run_spect_sim_slurm.sh brain --cluster bridges2 --account <project_id> --test-mode --dry-run
+./submit_slurm/run_spect_sim_slurm.sh brain --account <slurm_account> --test-mode --dry-run
 ```
 
 This reduces the run to a small pilot configuration suitable for quick validation.
 
 ### Sparse brain-SPECT SRM mode
 
-Sparse mode keeps the existing Gate simulation script unchanged. The brain wrapper runs multiple independent simulations, preserving `--num-chunks` inside each invocation to limit Geant4 event-number growth. Each loop writes ROOT files to local scratch, converts them to 1 mm, 1.5 mm, and 2 mm sparse NPZ matrices, copies the NPZ files to shared output, and deletes the intermediate ROOT files.
+Sparse mode is **on by default for brain simulations** (pass `--no-sparse-srm` to opt out). It keeps the existing Gate simulation script unchanged. The brain wrapper runs multiple independent simulations, preserving `--num-chunks` inside each invocation to limit Geant4 event-number growth. Each loop writes ROOT files to local scratch, converts them to 1 mm, 1.5 mm, and 2 mm sparse NPZ matrices, copies the NPZ files to shared output, and deletes the intermediate ROOT files.
 
 ```bash
 bash submit_slurm/run_spect_sim_slurm.sh brain \
-  --sparse-srm \
   --num-loops 100 \
   --num-chunks 10 \
   --chunk-duration-s 1 \
@@ -106,72 +112,83 @@ bash submit_slurm/run_spect_sim_slurm.sh brain \
   --dry-run
 ```
 
-`--num-loops` controls independent Gate invocations; `--num-chunks` controls timing intervals within each invocation. Final files are `final_srm_1mm.npz`, `final_srm_1p5mm.npz`, and `final_srm_2mm.npz`. For a local non-SLURM test, set `SCRATCH_ROOT`, `OUTPUT_DIR`, `CONTAINER_SIF`, and `SLURM_CPUS_PER_TASK`, then run `bash submit_slurm/wrapper_brain_spect_sim_slurm.sh --sparse-srm`. Detailed setup and cleanup behavior is documented in [submit_slurm/README.md](submit_slurm/README.md).
+`--num-loops` controls independent Gate invocations; `--num-chunks` controls timing intervals within each invocation. Final files are `final_srm_1mm.npz`, `final_srm_1p5mm.npz`, and `final_srm_2mm.npz`.
+
+Once the per-task combine succeeds, the wrapper writes `task_<id>/TASK_COMPLETE.json` containing the SHA-256 and byte size of every `final_srm_*.npz`. That marker is the only signal the workstation puller uses to decide a task is safe to transfer, so it is written atomically (temp file plus rename) and is never created for a task that produced no SRMs.
+
+For a local non-SLURM test, set `SCRATCH_ROOT`, `OUTPUT_DIR`, `CONTAINER_SIF`, and `SLURM_CPUS_PER_TASK`, then run `bash submit_slurm/wrapper_brain_spect_sim_slurm.sh --sparse-srm`. Detailed setup and cleanup behavior is documented in [submit_slurm/README.md](submit_slurm/README.md).
 
 ### Dry-run / inspect generated script
 
 ```bash
 ./submit_slurm/run_spect_sim_slurm.sh brain \
-  --cluster bridges2 \
-  --account <project_id> \
+  --account <slurm_account> \
   --test-mode \
   --dry-run
 ```
 
 This prints the generated `.sbatch` script without submitting it, so you can confirm the job directives, partitions, and output paths before submitting.
 
-## Running a Bridges2 production campaign with the local monitor
+## Running an Expanse production campaign with Globus pull and the local monitor
 
-This walks through submitting a sparse brain-SPECT campaign on Bridges2 and watching its progress from a dashboard served on your own machine (or a shared local server on your internal network).
+This walks through submitting a sparse brain-SPECT campaign on SDSC Expanse, pulling completed
+partial SRMs down to the workstation with `globus-cli`, combining them locally, and watching
+progress from a dashboard served on your own machine.
+
+The division of labor is:
+
+| Stage | Runs on | Output |
+| --- | --- | --- |
+| Gate simulation + per-loop sparse SRM | Expanse compute node (node-local NVMe) | per-loop `srm_*.npz` |
+| Per-task combine | Expanse compute node | `task_N/final_srm_*.npz` + `TASK_COMPLETE.json` |
+| Progress report | Expanse (small Slurm job) | `cluster_progress.json` (queue state) |
+| Progress polling + listing | workstation, sshfs mount (`~/sdsc-expanse`) | no Globus task |
+| Bulk transfer | workstation, `globus-cli` | verified `task_N/` under `/data/fanghan/...` |
+| Campaign combine | workstation (automatic after each pull) | campaign `final_srm_*.npz` |
+| Dashboard report | workstation (automatic, every minute) | `progress.json` |
+
+Only the small per-task SRMs and stats ever land on Lustre; the 2 TB Projects allocation acts as a
+rolling buffer rather than an archive, so a campaign can be far larger than the allocation.
+
+For a copy-pasteable validation run covering every stage, including staging the container on Expanse
+and installing the workstation timers, see
+[submit_slurm/expanse_globus_test_plan.md](submit_slurm/expanse_globus_test_plan.md).
 
 ### 0. Test the workflow end-to-end with a small pilot first
 
-Before trusting the pipeline for a full production campaign, validate every stage (submission → sparse SRM → combine → progress report → dashboard) with a cheap, fast pilot:
+Before trusting the pipeline for a full production campaign, validate every stage (submission →
+sparse SRM → per-task combine → progress report → Globus pull → local combine → dashboard) with a
+cheap, fast pilot:
 
 ```bash
 ./submit_slurm/run_spect_sim_slurm.sh brain \
-  --cluster bridges2 \
-  --account <project_id> \
+  --account <slurm_account> \
   --test-mode \
-  --sparse-srm \
   --num-loops 2 \
   --job-count 2 \
-  --combine-after
+  --auto-report
 ```
 
-or simply:
+`--test-mode` shrinks the run to `job-count=2`, `cpus-per-task=4`, `time-limit=0:30:00`, and a low
+source activity, so it finishes in minutes instead of hours. Sparse SRM mode is already the default
+for `brain`. Once the array job shows `COMPLETED` in `sacct`, confirm each stage produced what's
+expected:
 
 ```bash
-./submit_slurm/run_spect_sim_slurm.sh brain \
-  --cluster bridges2 \
-  --test-mode \
-  --sparse-srm \
-  --num-loops 2 \
-  --job-count 2 \
-  --combine-after
-```
-
-`--test-mode` shrinks the run to `job-count=2`, `cpus-per-task=4`, `time-limit=0:30:00`, and a low source activity, so it finishes in minutes instead of hours. Once the array job and the combine job both show `COMPLETED` in `squeue`/`sacct`, confirm each stage produced what's expected:
-
-```bash
-# on Bridges2, after the jobs finish
-ls "$DATA_DIR"                                  # expect task_0/, task_1/, final_srm_*.npz, combined_srm_metadata.json, campaign_manifest.json
-cat "$DATA_DIR/campaign_manifest.json"
+# on Expanse, after the jobs finish
+ls "$DATA_DIR"                                  # expect task_0/, task_1/, campaign_manifest.json
+cat "$DATA_DIR/task_0/TASK_COMPLETE.json"       # per-task checksums; the puller keys on this
 ls "$DATA_DIR/task_0/srm_chunks"/*_run_manifest.json   # per-loop resolved simulation parameters
-python3 payload/python/report_campaign_progress.py \
-  --campaign-dir "$DATA_DIR" --expected-tasks 2 --output "$DATA_DIR/progress.json"
-python3 -c "import json; json.load(open('$DATA_DIR/progress.json')); print('progress.json OK')"
 ```
 
-`tasks.complete` in `progress.json` should equal `2` and `srm.<label>.available` should be `true` for each resolution label. Only proceed to steps 1–6 below (or scale up `--job-count`/`--num-loops` for real production) once this pilot's `progress.json` looks correct and the local monitor (step 3–6) renders it without errors.
+Every task directory must contain `TASK_COMPLETE.json` and three `final_srm_*.npz` files before the
+workstation will pull it.
 
-### 1. Submit the campaign on Bridges2
+### 1. Submit the campaign on Expanse
 
 ```bash
 ./submit_slurm/run_spect_sim_slurm.sh brain \
-  --cluster bridges2 \
-  --account <project_id> \
-  --sparse-srm \
+  --account <slurm_account> \
   --job-count 100 \
   --cpus-per-task 8 \
   --time-limit 12:00:00 \
@@ -179,19 +196,23 @@ python3 -c "import json; json.load(open('$DATA_DIR/progress.json')); print('prog
   --num-chunks 10 \
   --chunk-duration-s 1.0 \
   --srm-fov-size-mm 210 \
-  --combine-after \
-  --combine-groups 10 \
   --auto-report \
   --report-interval-s 60
 ```
 
-Drop `--dry-run` only after you've inspected the generated `.sbatch` file. Note the printed `DATA_DIR` (campaign output directory on Bridges2's `$PROJECT` scratch) and the `Submitted array job <ARRAY_JOB_ID>` line — you'll need both for the next step.
+Drop `--dry-run` only after you've inspected the generated `.sbatch` file. Note the printed
+`DATA_DIR` (campaign output directory under `/expanse/lustre/projects/<group>/$USER`) and the
+`Submitted array job <ARRAY_JOB_ID>` line — you'll need both for the next steps.
+
+There is deliberately no `--combine-after` here: on Expanse the campaign-wide reduction happens on
+the workstation after transfer (step 4), which keeps the heavy merge off your allocation. The
+per-task combine still runs on the cluster because it collapses `num_loops × 3` files into 3.
 
 Every submission also writes a `campaign_manifest.json` (to both the log directory and `DATA_DIR`) recording the exact repo git commit, container SIF path/SHA-256, and every resolved scheduler/simulation parameter for that batch — this is the record to keep for reproducing or auditing a production run later. Each individual Gate invocation additionally writes its own `a_<job_id>_j_<task_id>[_loop_<loop_id>]_run_manifest.json` next to its stats file, capturing the fully resolved Python simulation parameters (including the random seed) actually used for that invocation; in sparse-SRM mode these end up under `task_<id>/srm_chunks/` alongside the per-loop stats and SRM chunks.
 
-### 2. Generate a progress JSON on Bridges2
+### 2. Generate a progress JSON on Expanse
 
-`--auto-report` above submits its own small, independent Slurm job (not a login-node process — login nodes typically kill or discourage long-running background processes) that regenerates `"$DATA_DIR/progress.json"` every `--report-interval-s` seconds. By default it requests `--report-cpus 1 --report-mem-gb 2 --report-time-limit 24:00:00` on the same partition as the main job (override with `--report-partition`); increase `--report-time-limit` for campaigns expected to run longer than 24 hours. It uses `sacct`/`squeue` on the array job for queue/run timing, and stops itself (after one final refresh) once the last stage of the pipeline (the combine job, if `--combine-after` was used) leaves the queue — so its own time limit only needs to be a safety cap, not an exact estimate. Its sbatch file and `%j.out`/`%j.err` logs are under `<LOG_DIR>`, printed in the submission summary as `Submitted progress reporter job <REPORT_JOB_ID>`.
+`--auto-report` above submits its own small, independent Slurm job (not a login-node process — login nodes typically kill or discourage long-running background processes) that regenerates `"$DATA_DIR/progress.json"` every `--report-interval-s` seconds. By default it requests `--report-cpus 1 --report-mem-gb 2 --report-time-limit 24:00:00` on the same partition as the main job (override with `--report-partition`); increase `--report-time-limit` for campaigns expected to run longer than 24 hours. It uses `sacct`/`squeue` on the array job for queue/run timing, and stops itself (after one final refresh) once the array job leaves the queue — so its own time limit only needs to be a safety cap, not an exact estimate. Because the wrapper copies each loop's stats file out to `srm_chunks/` as soon as that loop finishes, `progress.json` advances at per-loop granularity rather than only when a whole task completes. Its sbatch file and `%j.out`/`%j.err` logs are under `<LOG_DIR>`, printed in the submission summary as `Submitted progress reporter job <REPORT_JOB_ID>`.
 
 If you didn't pass `--auto-report`, or want an ad hoc refresh, run the same report generator directly on the login node instead:
 
@@ -205,18 +226,129 @@ python3 payload/python/report_campaign_progress.py \
 
 You can also (re-)submit the same reporter job manually (e.g. to re-attach monitoring to an already-running campaign) with `sbatch --wrap='bash submit_slurm/wrapper_generate_progress_report.sh --campaign-dir "$DATA_DIR" --expected-tasks 100 --job-id <ARRAY_JOB_ID> --watch-job-id <ARRAY_JOB_ID> --output "$DATA_DIR/progress.json" --interval-s 60' --cpus-per-task=1 --mem=2G --time=24:00:00 --partition=<partition>`.
 
-**How concurrent writes to `progress.json` are avoided:** `report_campaign_progress.py` always writes to `progress.json.tmp` and then atomically renames it into place, so anything reading the file (the monitor, `cat`, `scp`) only ever sees a complete, valid JSON document — never a half-written one. That alone doesn't stop two *writer* processes from racing each other, though, so `wrapper_generate_progress_report.sh` additionally takes an `flock` lock on `<output>.reporter.lock` for as long as it runs: if a second reporter job is accidentally submitted for the same `--output` path, it prints an error and exits immediately instead of corrupting the file. A one-off manual `report_campaign_progress.py` run (not through the wrapper) isn't locked, so avoid running that by hand against the same output path while a reporter job is also active. Since every campaign gets its own `progress.json`/lock file under its own `DATA_DIR`, running several campaigns at once is safe — their reporter jobs never contend with each other.
+**How concurrent writes to `progress.json` are avoided:** `report_campaign_progress.py` always writes to `progress.json.tmp` and then atomically renames it into place, so anything reading the file (the monitor, `cat`, `scp`) only ever sees a complete, valid JSON document — never a half-written one. That alone doesn't stop two _writer_ processes from racing each other, though, so `wrapper_generate_progress_report.sh` additionally takes an `flock` lock on `<output>.reporter.lock` for as long as it runs: if a second reporter job is accidentally submitted for the same `--output` path, it prints an error and exits immediately instead of corrupting the file. A one-off manual `report_campaign_progress.py` run (not through the wrapper) isn't locked, so avoid running that by hand against the same output path while a reporter job is also active. Since every campaign gets its own `progress.json`/lock file under its own `DATA_DIR`, running several campaigns at once is safe — their reporter jobs never contend with each other.
 
-### 3. Serve the dashboard from your local server
+### 3. Pull completed tasks to the workstation with Globus
 
-Run `serve_monitor.py` inside a `screen` session on the local server so it keeps running after you disconnect, without needing a systemd unit:
+Two different jobs are deliberately split by cost:
+
+- **Progress tracking** reads an sshfs mount of the Expanse project directory. It is a plain file
+  read, so it can poll every minute without touching Globus.
+- **Bulk transfer** of finished `task_*/` payloads uses Globus, which handles checksums, retries and
+  large files properly. Each transfer shows up as one task in the Globus Activity tab.
+
+Doing progress polling over Globus would create a transfer task per refresh and flood Activity, so
+the mount handles all the light-weight listing and metadata reads.
+
+Mount the project directory once (add it to `/etc/fstab` or a user unit to make it persistent):
+
+```bash
+mkdir -p ~/sdsc-expanse
+sshfs expanse:/expanse/lustre/projects/mgh102/fhan1 ~/sdsc-expanse
+findmnt -T ~/sdsc-expanse       # confirm it is mounted
+```
+
+One-time Globus setup on `rpil64c`:
+
+```bash
+# Globus Connect Personal must be running and must share the landing directory.
+~/Downloads/globusconnectpersonal-3.3.0/globusconnectpersonal -status
+grep /data/fanghan ~/.globusonline/lta/config-paths   # add "/data/fanghan/opengate_sim/,0,1" if absent
+
+# Mapped collections need a one-time consent (single-quote it; zsh globs the brackets).
+globus session consent 'urn:globus:auth:scope:transfer.api.globus.org:all[*https://auth.globus.org/scopes/8735b734-00dc-4659-be0d-ff96beaff17b/data_access]'
+```
+
+Copy `submit_slurm/globus.env.example` to `submit_slurm/globus.env` (gitignored) and set the campaign
+paths, including `QMIRT_MOUNT_PATH`. Note that the Expanse Lustre collection is rooted at
+`/expanse/lustre`, so the Globus path is `/projects/<group>/$USER/...` while Slurm sees
+`/expanse/lustre/projects/<group>/$USER/...` and the mount sees `~/sdsc-expanse/...`.
+
+```bash
+# Cheap: mount only, no Globus task at all.
+python3 payload/python/globus_pull_campaign.py --config submit_slurm/globus.env --progress-only
+
+# Full cycle: mount for listing, Globus for the bulk task payloads.
+python3 payload/python/globus_pull_campaign.py --config submit_slurm/globus.env --dry-run
+python3 payload/python/globus_pull_campaign.py --config submit_slurm/globus.env \
+  --combine-after-pull --report-after-pull
+```
+
+When `QMIRT_MOUNT_PATH` is set, the run scans `task_*/` directories on the mount, selects only those
+containing `TASK_COMPLETE.json`, and puts **only those task payloads** in a single batched
+`globus transfer --sync-level checksum`. Campaign-level files (`progress.json`,
+`campaign_manifest.json`) are copied straight off the mount and never enter the transfer. After the
+transfer it re-computes SHA-256 locally and records verified tasks in `pull_ledger.json`. Tasks that
+fail verification are left out of the ledger and retried, so the pull is idempotent and resumable.
+A cycle with no new tasks submits no Globus task at all.
+
+With `--combine-after-pull --report-after-pull` the same run then closes the loop automatically:
+
+1. **Combine** — re-runs the campaign reduction over every task pulled so far, but only when new
+   tasks were actually verified, so an idle cycle costs nothing.
+2. **Report** — regenerates `progress.json` from the local campaign directory, including SRM
+   statistics read from the freshly combined `final_srm_*.npz`.
+
+The cluster's own report is stored as `cluster_progress.json` so it cannot clobber the local one;
+its `slurm`/`rates`/`time` sections are grafted into the local `progress.json` under a `cluster`
+key, since `sacct` is only reachable from Expanse. The dashboard therefore shows both live queue
+state and locally combined SRM statistics from a single file.
+
+Add `--no-srm-stats` if reading the combined matrices every cycle becomes expensive; task counts and
+event totals are still reported.
+
+Remote data is **not** deleted by default. Once you trust the pipeline, add `--purge-after-pull` to
+delete verified task directories from Lustre and keep the 2 TB allocation as a rolling buffer.
+
+Install both timers from `submit_slurm/systemd/` (edit the paths first). They run at different
+cadences on purpose: progress every minute over the mount, Globus pulls every 30 minutes.
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp submit_slurm/systemd/qmirt-*.service submit_slurm/systemd/qmirt-*.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now qmirt-progress-refresh.timer qmirt-globus-pull.timer
+loginctl enable-linger "$USER"     # keep user units running after logout
+systemctl --user list-timers 'qmirt-*'
+journalctl --user -u qmirt-globus-pull.service -f
+```
+
+Both services put the `opengate` micromamba environment on `PATH`, since `globus` and `numpy` both
+live there. With the timers installed, steps 4 and 5 below happen on their own — run them by hand
+only for a one-off or when debugging.
+
+If the sshfs mount goes stale the run aborts with a clear error rather than silently reporting an
+empty campaign; remount and it recovers on the next tick.
+
+### 4. Combine the campaign locally
+
+With the timer from step 3 running, this happens automatically after every pull that brings in new
+tasks. To do it manually — for a one-off pull or while debugging — run the combine wrapper directly.
+It falls back to plain `python3` when no Apptainer image is present, so it needs no container:
+
+```bash
+CAMPAIGN=/data/fanghan/opengate_sim/data/brain_spect/<batch_id>
+bash submit_slurm/wrapper_campaign_combine.sh \
+  --campaign-dir "$CAMPAIGN" \
+  --input-stage tasks \
+  --expected-tasks 100
+```
+
+This writes `final_srm_{1mm,1p5mm,2mm}.npz` and `combined_srm_metadata.json` at the campaign root.
+Re-running it after more tasks arrive simply folds in the larger input set, so you can combine
+incrementally while the campaign is still running. Add `--require-complete` for the final pass.
+
+### 5. Serve the dashboard from your local server
+
+Because step 3 regenerates `progress.json` on local disk after every pull, the monitor just watches a
+local file — no SSH, no remote command per poll. The file already carries both the locally combined
+SRM statistics and the cluster's queue state, so the dashboard stays current on its own:
 
 ```bash
 screen -S srm-monitor
 python3 monitor/serve_monitor.py \
   --host 127.0.0.1 --port 8765 \
-  --ssh-host <bridges2-user>@data.bridges2.psc.edu \
-  --remote-json "$DATA_DIR/progress.json" \
+  --local-json "$CAMPAIGN/progress.json" \
   --interval-s 30
 ```
 
@@ -230,19 +362,13 @@ screen -r srm-monitor       # reattach
 
 If the server reboots, the `screen` session won't survive — you'll need to start it again the same way; there's no auto-restart unless you add one (e.g. a `@reboot` crontab entry running the same `screen -dmS srm-monitor python3 monitor/serve_monitor.py ...` command).
 
-Binding to `127.0.0.1` keeps the raw dev server off the network; only your reverse proxy (next step) should be reachable externally. This requires passwordless SSH (an `ssh-agent`/key pair) from the local server to Bridges2's data-transfer node, since it re-runs `ssh <bridges2-user>@data.bridges2.psc.edu "cat ..."` on every poll. Using `data.bridges2.psc.edu` (rather than the interactive login node) is PSC's intended host for repeated automated file transfers, and keeps this polling off the login node entirely.
-
-To test just this step with the step-0 pilot's `progress.json` before wiring up SSH, `scp` it down and point `serve_monitor.py` at the local copy first:
+Binding to `127.0.0.1` keeps the raw dev server off the network; only your reverse proxy (next step) should be reachable externally.
 
 ```bash
-scp <bridges2-user>@data.bridges2.psc.edu:"$DATA_DIR/progress.json" /tmp/pilot_progress.json
-python3 monitor/serve_monitor.py --host 127.0.0.1 --port 8765 --local-json /tmp/pilot_progress.json
 curl -s http://127.0.0.1:8765/api/progress | python3 -m json.tool | head -20
 ```
 
-If that renders correctly (open `http://127.0.0.1:8765` in a browser on the local server), switch to `--ssh-host`/`--remote-json` for live polling as shown above.
-
-### 4. Put nginx in front with HTTPS
+### 6. Put nginx in front with HTTPS
 
 Add an nginx site that redirects `80 → 443` and reverse-proxies to the local `127.0.0.1:8765` monitor:
 
@@ -257,7 +383,7 @@ sudo nginx -t && sudo systemctl reload nginx
 
 See [monitor/README.md](monitor/README.md) for the exact `server { ... }` blocks (HTTP→HTTPS redirect plus the `proxy_pass http://127.0.0.1:8765;` block) and the detector pixel-mapping conventions the dashboard uses.
 
-### 5. Open the firewall
+### 7. Open the firewall
 
 ```bash
 sudo ufw allow 443/tcp
@@ -267,9 +393,9 @@ sudo ufw status verbose
 
 Confirm `8765/tcp` is **not** in the allow list — it should only be reachable via nginx on `127.0.0.1`, not directly from the network.
 
-### 6. View it
+### 8. View it
 
-Browse to `https://<your-local-server-hostname>` from a machine on the same internal network/VPN. The dashboard polls `/api/progress` every 15 seconds and reflects whatever `report_campaign_progress.py` last wrote to `progress.json` on Bridges2.
+Browse to `https://<your-local-server-hostname>` from a machine on the same internal network/VPN. The dashboard polls `/api/progress` every 15 seconds and reflects whatever the last Globus pull placed in the local `progress.json`.
 
 ## 40 trillion-event simulation plan
 
@@ -531,3 +657,45 @@ Do the following for 4 times.
 ```bash
 ./run_spect_sim_slurm.sh brain --cluster bridges2 --job-count 500 --cpus-per-task 128 --concurrent-limit 32 --source-activity-bq 6.25e6 --chunk-duration-s 1.0 --num-chunks 25
 ```
+
+## Globus transfer
+
+### Local workstaion
+
+- Globus Connect Personal must be installed and running.
+- Endpoint ID for `rpil64c`:
+
+  ```plain
+  c88668d2-ab9f-11f1-b472-0afff7074b21
+  ```
+
+### SDSC Expanse
+
+| ID                                   | Display Name              |
+| :----------------------------------- | :------------------------ |
+| 8735b734-00dc-4659-be0d-ff96beaff17b | SDSC HPC - Expanse Lustre |
+| ba05bd44-4422-48ab-a110-842e0edd107c | SDSC HPC Data Movers      |
+
+### Path conventions
+
+The Expanse Lustre collection is rooted at `/expanse/lustre`, so Globus paths are
+collection-relative and differ from the POSIX paths Slurm and the wrappers use:
+
+| Purpose | Globus path | POSIX path on Expanse |
+| :--- | :--- | :--- |
+| Projects allocation (2 TB, campaign buffer) | `/projects/<group>/$USER/` | `/expanse/lustre/projects/<group>/$USER/` |
+| Lustre scratch (free, ~90-day purge) | `/scratch/$USER/temp_project/` | `/expanse/lustre/scratch/$USER/temp_project/` |
+
+`<group>` is your SDSC unix group (`id -Gn` on Expanse), which is **not** the ACCESS allocation ID
+used for `--account`. Node-local NVMe on compute nodes is `/scratch/$USER/job_$SLURM_JOB_ID` and is
+not reachable over Globus.
+
+Verify access before running a campaign:
+
+```bash
+globus ls 8735b734-00dc-4659-be0d-ff96beaff17b:/projects/<group>/$USER/
+globus ls c88668d2-ab9f-11f1-b472-0afff7074b21:/data/fanghan/opengate_sim/data/brain_spect/
+```
+
+Both commands must succeed; see step 3 of the Expanse campaign walkthrough for the consent and
+Globus Connect Personal path setup they depend on.
