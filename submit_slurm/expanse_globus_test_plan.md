@@ -45,8 +45,7 @@ ls -lh submit_slurm/*.sif
 **Gate check** — nothing downstream works if this fails:
 
 ```bash
-singularity exec submit_slurm/qmirt-gate-10-sim-sif_v1.0.0.sif \
-  python3 -c "import opengate; print(opengate.__version__)"
+singularity exec submit_slurm/qmirt-gate-10-sim-sif_v1.0.0.sif python3 -c "from importlib.metadata import version;print('OPEN GATE version',version('opengate'))"
 ```
 
 ## Phase 2 — Dry run, then submit the pilot
