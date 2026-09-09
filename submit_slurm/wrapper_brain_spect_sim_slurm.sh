@@ -156,7 +156,7 @@ build_sparse_worker_command() {
         sparse_worker_cmd=(
             "${APPTAINER_CMD[@]}"
             python3
-            "$REPO_ROOT/payload/python/generate_brain_sparse_srm.py"
+            "$REPO_ROOT/payload/python/generate_spect_sparse_srm.py"
             --input-dir "$input_dir"
             --output-dir "$output_dir"
             --fov-size-mm "${SRM_FOV_SIZE_MM:-210}"
@@ -167,7 +167,7 @@ build_sparse_worker_command() {
     else
         sparse_worker_cmd=(
             python3
-            "$REPO_ROOT/payload/python/generate_brain_sparse_srm.py"
+            "$REPO_ROOT/payload/python/generate_spect_sparse_srm.py"
             --input-dir "$input_dir"
             --output-dir "$output_dir"
             --fov-size-mm "${SRM_FOV_SIZE_MM:-210}"
@@ -267,20 +267,22 @@ run_sparse_workflow() {
         combine_cmd=(
             "${APPTAINER_CMD[@]}"
             python3
-            "$REPO_ROOT/payload/python/combine_brain_sparse_srm.py"
+            "$REPO_ROOT/payload/python/combine_spect_sparse_srm.py"
             --input-dir "$CHUNK_OUTPUT_DIR"
             --output-dir "$OUT_DIR"
             --expected-inputs "$NUM_LOOPS"
             --require-complete
+            --no-split-per-head
         )
     else
         combine_cmd=(
             python3
-            "$REPO_ROOT/payload/python/combine_brain_sparse_srm.py"
+            "$REPO_ROOT/payload/python/combine_spect_sparse_srm.py"
             --input-dir "$CHUNK_OUTPUT_DIR"
             --output-dir "$OUT_DIR"
             --expected-inputs "$NUM_LOOPS"
             --require-complete
+            --no-split-per-head
         )
     fi
     "${combine_cmd[@]}"

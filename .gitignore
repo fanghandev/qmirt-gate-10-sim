@@ -241,3 +241,5 @@ results/cardiac_spect/data
 **/local_array_test/
 **/local_sparse_test/
 **/dashboard_demo/
+# HTCondor per-batch logs and staged job inputs
+submit_htcondor/logs/

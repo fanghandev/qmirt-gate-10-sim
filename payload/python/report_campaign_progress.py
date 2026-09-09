@@ -71,6 +71,16 @@ def parse_args() -> argparse.Namespace:
         help="Directory holding final_srm_*.npz. Defaults to the campaign dir.",
     )
     parser.add_argument(
+        "--task-layout",
+        choices=["slurm", "ospool"],
+        default="slurm",
+        help=(
+            "slurm: one task_<id>/ directory per array task. "
+            "ospool: flat partials/ tree where each HTCondor job is identified by a "
+            "c_<cluster>_p_<proc> tag in its stats filenames."
+        ),
+    )
+    parser.add_argument(
         "--no-srm-stats",
         action="store_true",
         help="Skip reading combined SRMs (cheaper, for frequent polling).",
@@ -243,6 +253,72 @@ def scan_task(task_dir: Path, srm_label: str) -> dict:
     }
 
 
+def scan_ospool_tasks(partial_dir: Path) -> list[dict]:
+    """Group the flat OSPool partial-SRM outputs into one entry per HTCondor job.
+
+    There are no task_ directories: every job unpacks into a shared partials/ tree
+    and identifies itself with a c_<cluster>_p_<proc> tag in its stats filenames.
+    """
+    stats_dir = partial_dir / "stats"
+    if not stats_dir.is_dir():
+        return []
+
+    tag_pattern = re.compile(r"_(c_\d+_p_\d+)_loop_(\d+)\.")
+    grouped: dict[str, dict] = {}
+
+    def entry_for(tag: str) -> dict:
+        return grouped.setdefault(
+            tag,
+            {
+                "task_id": tag,
+                "complete": True,
+                "loops_done": 0,
+                "primaries": 0,
+                "tracks": 0,
+                "steps": 0,
+                "simulation_seconds": 0.0,
+                "init_seconds": 0.0,
+                "raw_singles": 0,
+                "accepted_singles": 0,
+                "peak_rss_mb": 0.0,
+                "mean_cpu_pct": None,
+                "mean_cpu_pct_of_allocation": None,
+                "requested_cpus": 1,
+                "start_epoch_s": None,
+                "end_epoch_s": None,
+                "wall_time_seconds": None,
+            },
+        )
+
+    for stats_path in sorted(stats_dir.glob("sim_stats_c_*_p_*_loop_*.txt")):
+        match = tag_pattern.search(stats_path.name)
+        if match is None:
+            continue
+        stats = read_json(stats_path)
+        if not stats:
+            continue
+        task = entry_for(match.group(1))
+        task["loops_done"] += 1
+        task["primaries"] += int(stats.get("events", {}).get("value", 0))
+        task["tracks"] += int(stats.get("tracks", {}).get("value", 0))
+        task["steps"] += int(stats.get("steps", {}).get("value", 0))
+        task["simulation_seconds"] += duration_to_seconds(stats.get("duration", {}))
+        task["init_seconds"] += duration_to_seconds(stats.get("init", {}))
+
+    for meta_path in sorted(stats_dir.glob("srm_metadata_c_*_p_*_loop_*.json")):
+        match = tag_pattern.search(meta_path.name)
+        if match is None:
+            continue
+        meta = read_json(meta_path)
+        if not meta:
+            continue
+        task = entry_for(match.group(1))
+        task["raw_singles"] += int(meta.get("raw_events", 0))
+        task["accepted_singles"] += int(meta.get("accepted_events", 0))
+
+    return [grouped[tag] for tag in sorted(grouped)]
+
+
 def union_seconds(intervals: list[tuple[float, float]]) -> float:
     """Wall-clock duration covered by intervals, counting overlap only once."""
     spans = sorted((s, e) for s, e in intervals if e > s)
@@ -399,7 +475,85 @@ def project_plane(
     }
 
 
+def per_head_srm_paths(path: Path) -> list[Path]:
+    """Per-head CSR files written by combine_spect_sparse_srm.py --split-per-head."""
+    return sorted(path.parent.glob(f"{path.stem}_head_*.npz"))
+
+
+def srm_available(path: Path) -> bool:
+    return path.is_file() or bool(per_head_srm_paths(path))
+
+
+def load_per_head_srm(path: Path) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Rebuild the flat (crystal, pixel, x, y, z) view from per-head CSR files."""
+    from scipy.sparse import load_npz
+
+    label = path.stem.removeprefix("final_srm_")
+    metadata_path = path.parent / "combined_srm_metadata.json"
+    if not metadata_path.is_file():
+        raise FileNotFoundError(f"{metadata_path} is required to read per-head SRMs")
+    entry = json.loads(metadata_path.read_text())["resolutions"][label]
+    grid_size = int(entry["grid_size"])
+
+    coord_blocks = []
+    count_blocks = []
+    expected_counts = {
+        int(item["head"]): int(item["accumulated_counts"])
+        for item in entry.get("heads", [])
+    }
+    for head_path in per_head_srm_paths(path):
+        head_index = int(head_path.stem.rsplit("_", 1)[-1]) - 1
+        matrix = load_npz(head_path).tocoo()
+        # Guards against reading a set of files a concurrent combine is mid-way
+        # through replacing, which would otherwise plot as a plausible wrong total.
+        expected = expected_counts.get(head_index + 1)
+        if expected is not None and int(matrix.sum()) != expected:
+            raise ValueError(
+                f"{head_path.name} holds {int(matrix.sum())} counts but "
+                f"{metadata_path.name} expects {expected}; the SRM is being rewritten"
+            )
+        if matrix.nnz == 0:
+            continue
+        pixels = matrix.row.astype(np.int64, copy=False)
+        voxels = matrix.col.astype(np.int64, copy=False)
+        coord_blocks.append(
+            np.column_stack(
+                (
+                    np.full(matrix.nnz, head_index, dtype=np.int64),
+                    pixels,
+                    voxels // (grid_size * grid_size),
+                    (voxels // grid_size) % grid_size,
+                    voxels % grid_size,
+                )
+            )
+        )
+        count_blocks.append(matrix.data.astype(np.int64, copy=False))
+
+    coords = (
+        np.concatenate(coord_blocks)
+        if coord_blocks
+        else np.empty((0, 5), dtype=np.int64)
+    )
+    counts = (
+        np.concatenate(count_blocks) if count_blocks else np.empty(0, dtype=np.int64)
+    )
+    meta = {
+        "grid_size": grid_size,
+        "voxel_size_mm": float(entry["voxel_size_mm"]),
+        "extent_mm": list(entry["hist_range"]),
+        "energy_window_kev": [
+            float(entry["energy_min_kev"]),
+            float(entry["energy_max_kev"]),
+        ],
+        "chunk_count": entry.get("chunk_count"),
+        "input_count": entry.get("input_count"),
+    }
+    return coords, counts, meta
+
+
 def load_srm(path: Path) -> tuple[np.ndarray, np.ndarray, dict]:
+    if not path.is_file():
+        return load_per_head_srm(path)
     with np.load(path, allow_pickle=False) as data:
         coords = np.asarray(data["coords"], dtype=np.int64)
         counts = np.asarray(data["counts"], dtype=np.int64)
@@ -539,9 +693,9 @@ def summarize_srm(path: Path, top_elements: int, max_points: int) -> dict:
     )
 
     detector_ids, detector_inverse = np.unique(detector_index, return_inverse=True)
-    detector_sums = np.bincount(
-        np.ravel(detector_inverse), weights=counts
-    ).astype(np.int64)
+    detector_sums = np.bincount(np.ravel(detector_inverse), weights=counts).astype(
+        np.int64
+    )
     voxel_ids, voxel_inverse = np.unique(voxel_index, return_inverse=True)
     voxel_sums = np.bincount(np.ravel(voxel_inverse), weights=counts).astype(np.int64)
 
@@ -707,10 +861,7 @@ def collect_geometry(path: Path, crystal_offset: int, pixel_grid: int) -> dict:
         heads.append(head)
     heads.sort(key=lambda h: h["crystal_id"])
     extent = max(
-        (
-            float(np.abs(np.asarray(h["crystal"]["vertices"])).max())
-            for h in heads
-        ),
+        (float(np.abs(np.asarray(h["crystal"]["vertices"])).max()) for h in heads),
         default=0.0,
     )
     return {
@@ -744,7 +895,7 @@ def main() -> int:
     if args.pixel_query:
         srm_dir = (args.srm_dir or args.campaign_dir).resolve()
         path = srm_dir / f"final_srm_{labels[0]}.npz"
-        if not path.is_file():
+        if not srm_available(path):
             result = {"available": False, "path": str(path), "error": "SRM not found"}
         else:
             try:
@@ -778,7 +929,10 @@ def main() -> int:
         (path for path in campaign_dir.glob("task_*") if path.is_dir()),
         key=task_sort_key,
     )
-    tasks = [scan_task(path, labels[0]) for path in task_dirs]
+    if args.task_layout == "ospool":
+        tasks = scan_ospool_tasks(campaign_dir / "partials")
+    else:
+        tasks = [scan_task(path, labels[0]) for path in task_dirs]
 
     complete = [t for t in tasks if t["complete"]]
     incomplete = [t for t in tasks if not t["complete"]]
@@ -889,7 +1043,7 @@ def main() -> int:
     srm_reports = {}
     for label in labels:
         path = srm_dir / f"final_srm_{label}.npz"
-        if args.no_srm_stats or not path.is_file():
+        if args.no_srm_stats or not srm_available(path):
             srm_reports[label] = {"available": False, "path": str(path)}
             continue
         try:

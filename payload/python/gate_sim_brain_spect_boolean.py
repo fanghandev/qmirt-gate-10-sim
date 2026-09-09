@@ -448,7 +448,8 @@ def add_volume_source(
         return source_obj
     if fov_shape_name == "sphere":
         source.position.type = "sphere"
-        source.position.radius = fov_size * gate.g4_units.mm
+        # fov_size_mm is a diameter, matching add_fov_volume_to_gate_sim.
+        source.position.radius = fov_size * 0.5 * gate.g4_units.mm
         source_obj = sim.add_source(source, name=name)
         source_obj.attached_to = "FOVSphere"
         return source_obj
@@ -506,9 +507,18 @@ def write_run_manifest(
 
 
 def add_actors(
-    sim: gate.Simulation, n_crystals: int, output_dir: Path, output_stem: str
+    sim: gate.Simulation,
+    n_crystals: int,
+    output_dir: Path,
+    output_stem: str,
+    energy_resolution: float = 0.10,
+    energy_resolution_reference_kev: float = 140.0,
 ):
     pixel_array_name = [f"pixel_{i + 1}" for i in range(n_crystals)]
+    if energy_resolution < 0:
+        raise ValueError("energy_resolution must be >= 0")
+    blur_fwhm_kev = energy_resolution * energy_resolution_reference_kev
+    singles_root_path = output_dir / f"pixel_singles_{output_stem}.root"
 
     # Keep hits in-memory only as input to the singles chain.
     for i in range(n_crystals):
@@ -531,15 +541,25 @@ def add_actors(
             "PreStepUniqueVolumeIDAsInt",
         ]
         pixel_readout_actor = sim.add_actor(
-            "DigitizerReadoutActor", f"Pixel_{i + 1}_Singles"
+            "DigitizerReadoutActor", f"Pixel_{i + 1}_Readout"
         )
         pixel_readout_actor.input_digi_collection = pixel_hits_actor.name
         # pixel_readout_actor.group_volume = pixel_array_name[i]
         pixel_readout_actor.discretize_volume = pixel_array_name[i]
         pixel_readout_actor.policy = "EnergyWeightedCentroidPosition"
-        pixel_readout_actor.output_filename = (
-            output_dir / f"pixel_singles_{output_stem}.root"
+        pixel_readout_actor.output_filename = ""
+
+        # Named "Pixel_N_Singles" so the ROOT tree names stay stable for the
+        # downstream SRM builders.
+        pixel_blur_actor: gate.actors.digitizers.DigitizerBlurringActor = sim.add_actor(
+            "DigitizerBlurringActor", f"Pixel_{i + 1}_Singles"
         )
+        pixel_blur_actor.attached_to = pixel_array_name[i]
+        pixel_blur_actor.input_digi_collection = pixel_readout_actor.name
+        pixel_blur_actor.blur_attribute = "TotalEnergyDeposit"
+        pixel_blur_actor.blur_method = "Gaussian"
+        pixel_blur_actor.blur_fwhm = blur_fwhm_kev * gate.g4_units.keV
+        pixel_blur_actor.output_filename = singles_root_path
 
 
 def configure_chunked_run_timing(sim: gate.Simulation, args):
@@ -635,6 +655,8 @@ def run_simulation(
         n_crystals,
         output_dir,
         output_stem,
+        energy_resolution=args.energy_resolution,
+        energy_resolution_reference_kev=args.energy_resolution_reference_kev,
     )
     add_stats_actor(sim, output_dir, output_stem)
     write_run_manifest(output_dir, output_stem, args, unique_seed)
@@ -743,7 +765,20 @@ def parse_arguments():
         "--fov-size-mm",
         type=float,
         default=210.0,
-        help="FOV size in mm. For box, this is the side length; for sphere, it is the radius.",
+        help="FOV size in mm. For box, this is the side length; for sphere, it is the diameter.",
+    )
+    parser.add_argument(
+        "--energy-resolution",
+        type=float,
+        default=0.10,
+        help="Gaussian energy blurring FWHM as a fraction of the reference energy. "
+        "Use 0 for no blurring.",
+    )
+    parser.add_argument(
+        "--energy-resolution-reference-kev",
+        type=float,
+        default=140.0,
+        help="Reference energy in keV at which --energy-resolution is specified.",
     )
 
     return parser.parse_args()

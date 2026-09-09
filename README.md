@@ -259,10 +259,29 @@ grep /data/fanghan ~/.globusonline/lta/config-paths   # add "/data/fanghan/openg
 globus session consent 'urn:globus:auth:scope:transfer.api.globus.org:all[*https://auth.globus.org/scopes/8735b734-00dc-4659-be0d-ff96beaff17b/data_access]'
 ```
 
-Copy `submit_slurm/globus.env.example` to `submit_slurm/globus.env` (gitignored) and set the campaign
-paths, including `QMIRT_MOUNT_PATH`. Note that the Expanse Lustre collection is rooted at
+Copy `submit_slurm/globus.env.example` to `submit_slurm/globus.env` (gitignored) and set the endpoint
+UUIDs and the three path roots once. Note that the Expanse Lustre collection is rooted at
 `/expanse/lustre`, so the Globus path is `/projects/<group>/$USER/...` while Slurm sees
 `/expanse/lustre/projects/<group>/$USER/...` and the mount sees `~/sdsc-expanse/...`.
+
+After that, point the config at a campaign with the helper rather than editing five keys by hand:
+
+```bash
+./submit_slurm/select_campaign.sh --list      # campaigns visible on the mount
+./submit_slurm/select_campaign.sh --latest    # or --batch batch_YYYYMMDD_HHMMSS
+```
+
+It keeps the existing path roots and rewrites only the trailing batch id in `QMIRT_SRC_PATH`,
+`QMIRT_MOUNT_PATH`, `QMIRT_DST_PATH` and `QMIRT_LOCAL_PATH`, then sets `QMIRT_EXPECTED_TASKS` from
+the `job_count` recorded in that campaign's `campaign_manifest.json` (rather than counting task
+directories, which would undercount while the array is still running). It also reports how many
+tasks are already marked complete:
+
+```plain
+Campaign:       batch_20260908_111936
+Expected tasks: 2
+Tasks ready:    2
+```
 
 ```bash
 # Cheap: mount only, no Globus task at all.

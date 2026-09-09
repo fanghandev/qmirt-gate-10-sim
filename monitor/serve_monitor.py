@@ -23,9 +23,21 @@ STATIC_DIR = Path(__file__).resolve().parent
 
 
 class ProgressCache:
-    def __init__(self, fetch_command: list[str] | None, local_path: Path | None):
+    def __init__(
+        self,
+        fetch_command: list[str] | None,
+        local_path: Path | None,
+        name: str = "default",
+        label: str | None = None,
+        ssh_host: str | None = None,
+        remote_repo_root: str | None = None,
+    ):
         self.fetch_command = fetch_command
         self.local_path = local_path
+        self.name = name
+        self.label = label or name
+        self.ssh_host = ssh_host
+        self.remote_repo_root = remote_repo_root
         self.lock = threading.Lock()
         self.payload: dict = {"status": "starting"}
         self.fetched_at = 0.0
@@ -57,19 +69,24 @@ class ProgressCache:
     def snapshot(self) -> dict:
         with self.lock:
             return {
+                "campaign": self.name,
+                "label": self.label,
                 "fetched_at": self.fetched_at,
                 "error": self.error,
                 "progress": self.payload,
             }
 
 
-def poll_loop(cache: ProgressCache, interval_s: float, stop: threading.Event) -> None:
+def poll_loop(
+    caches: list[ProgressCache], interval_s: float, stop: threading.Event
+) -> None:
     while not stop.is_set():
-        cache.refresh()
+        for cache in caches:
+            cache.refresh()
         stop.wait(interval_s)
 
 
-def make_handler(cache: ProgressCache, ssh_host: str | None, remote_repo_root: str | None):
+def make_handler(caches: dict[str, ProgressCache], default_name: str):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args) -> None:  # keep the console quiet
             pass
@@ -89,8 +106,18 @@ def make_handler(cache: ProgressCache, ssh_host: str | None, remote_repo_root: s
                 "application/json",
             )
 
+        def _select_cache(self, query: dict) -> ProgressCache | None:
+            name = (query.get("campaign") or [default_name])[0]
+            return caches.get(name)
+
         def _pixel_query(self) -> None:
             query = parse_qs(urlsplit(self.path).query)
+            cache = self._select_cache(query)
+            if cache is None:
+                self._send_json(404, {"available": False, "error": "unknown campaign"})
+                return
+            ssh_host = cache.ssh_host
+            remote_repo_root = cache.remote_repo_root
             try:
                 label = query["label"][0]
                 crystal = int(query["crystal"][0])
@@ -177,7 +204,24 @@ def make_handler(cache: ProgressCache, ssh_host: str | None, remote_repo_root: s
             self._send_json(200, payload)
 
         def do_GET(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
+            if self.path.startswith("/api/campaigns"):
+                self._send_json(
+                    200,
+                    {
+                        "default": default_name,
+                        "campaigns": [
+                            {"name": cache.name, "label": cache.label}
+                            for cache in caches.values()
+                        ],
+                    },
+                )
+                return
             if self.path.startswith("/api/progress"):
+                query = parse_qs(urlsplit(self.path).query)
+                cache = self._select_cache(query)
+                if cache is None:
+                    self._send_json(404, {"error": "unknown campaign"})
+                    return
                 self._send_json(200, cache.snapshot())
                 return
             if self.path.startswith("/api/pixel"):
@@ -211,6 +255,16 @@ def parse_args() -> argparse.Namespace:
         "--fetch-command",
         help="Arbitrary shell command whose stdout is the progress JSON.",
     )
+    source.add_argument(
+        "--campaign",
+        action="append",
+        metavar="NAME=PATH",
+        help=(
+            "Serve several campaigns at once, e.g. "
+            "--campaign 'Brain (Expanse)=/data/.../progress.json'. Repeatable; the "
+            "dashboard shows a selector. Paths must be local to this machine."
+        ),
+    )
     parser.add_argument(
         "--remote-json",
         help="Path to the progress JSON on the SSH host (with --ssh-host).",
@@ -234,33 +288,65 @@ def main() -> int:
     if args.ssh_host and not args.remote_json:
         raise SystemExit("--ssh-host requires --remote-json")
 
-    fetch_command = None
-    if args.ssh_host:
-        # -C matters: the projection payload is JSON and compresses roughly 10x.
-        fetch_command = [
-            "ssh",
-            "-C",
-            args.ssh_host,
-            f"cat {shlex.quote(args.remote_json)}",
-        ]
-    elif args.fetch_command:
-        fetch_command = shlex.split(args.fetch_command)
+    caches: dict[str, ProgressCache] = {}
+    if args.campaign:
+        for entry in args.campaign:
+            label, separator, raw_path = entry.partition("=")
+            if not separator or not raw_path.strip():
+                raise SystemExit(f"--campaign expects NAME=PATH, got: {entry!r}")
+            label = label.strip()
+            # The name is what travels in query strings; the label is for display.
+            name = "".join(
+                character if character.isalnum() else "_" for character in label
+            ).strip("_")
+            if name in caches:
+                raise SystemExit(f"duplicate campaign name: {label}")
+            caches[name] = ProgressCache(
+                None,
+                Path(raw_path.strip()).expanduser(),
+                name=name,
+                label=label,
+                remote_repo_root=args.remote_repo_root,
+            )
+    else:
+        fetch_command = None
+        if args.ssh_host:
+            # -C matters: the projection payload is JSON and compresses roughly 10x.
+            fetch_command = [
+                "ssh",
+                "-C",
+                args.ssh_host,
+                f"cat {shlex.quote(args.remote_json)}",
+            ]
+        elif args.fetch_command:
+            fetch_command = shlex.split(args.fetch_command)
+        caches["default"] = ProgressCache(
+            fetch_command,
+            args.local_json,
+            name="default",
+            label="campaign",
+            ssh_host=args.ssh_host,
+            remote_repo_root=args.remote_repo_root,
+        )
 
-    cache = ProgressCache(fetch_command, args.local_json)
+    default_name = next(iter(caches))
     stop = threading.Event()
     thread = threading.Thread(
-        target=poll_loop, args=(cache, args.interval_s, stop), daemon=True
+        target=poll_loop,
+        args=(list(caches.values()), args.interval_s, stop),
+        daemon=True,
     )
     thread.start()
 
     server = ThreadingHTTPServer(
-        (args.host, args.port), make_handler(cache, args.ssh_host, args.remote_repo_root)
+        (args.host, args.port), make_handler(caches, default_name)
     )
     print(f"SRM monitor on http://{args.host}:{args.port} (poll {args.interval_s}s)")
-    if fetch_command:
-        print("Fetch:", " ".join(fetch_command))
-    else:
-        print("Fetch: local file", args.local_json)
+    for cache in caches.values():
+        if cache.fetch_command:
+            print(f"  {cache.label}: {' '.join(cache.fetch_command)}")
+        else:
+            print(f"  {cache.label}: local file {cache.local_path}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

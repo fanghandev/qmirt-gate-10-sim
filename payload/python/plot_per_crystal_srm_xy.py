@@ -2,7 +2,7 @@
 """Plot per-crystal cardiac SPECT SRM maps in the XY plane from sparse histogram data.
 
 The script consumes the ``sparse_3d_histograms.npz`` file produced by
-``ospool_sim_make_srm.py``. The file stores sparse coordinates as
+``generate_spect_sparse_srm.py``. The file stores sparse coordinates as
 ``(CrystalID, PixelID, x_bin, y_bin, z_bin)`` along with counts. This script
 collapses the sparse 3D representation onto the XY plane for each crystal and
 writes one PNG per crystal.

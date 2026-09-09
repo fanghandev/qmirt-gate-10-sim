@@ -74,6 +74,7 @@
 <header>
   <div class="titlerow">
     <h1>SRM Production Monitor</h1>
+    <select id="campaignSel" style="display:none"></select>
     <span class="meta" id="campaign">&mdash;</span>
     <span class="meta" id="updated">connecting&hellip;</span>
   </div>
@@ -88,11 +89,15 @@
 "use strict";
 
 const state = { data: null, active: "overview",
+                campaign: null, campaigns: [],
                 pixelSel: {}, pixelData: {}, pixelToken: 0,
                 hideZeroBin: {},
                 showGeometry: true, showRay: true,
                 colorMap: "Turbo",
                 pixelMap: { swap: true, flipU: true, flipV: true } };
+
+const campaignQuery = () =>
+  state.campaign ? "campaign=" + encodeURIComponent(state.campaign) : "";
 
 const fmtInt = n => (n == null ? "\u2014" : Math.round(n).toLocaleString());
 const fmtNum = (n, d = 2) =>
@@ -629,7 +634,8 @@ async function loadPixel(label, srm) {
   let data;
   try {
     const res = await fetch("/api/pixel?label=" + encodeURIComponent(label) +
-      "&crystal=" + sel.crystal + "&pixel=" + sel.pixel, { cache: "no-store" });
+      "&crystal=" + sel.crystal + "&pixel=" + sel.pixel +
+      (campaignQuery() ? "&" + campaignQuery() : ""), { cache: "no-store" });
     data = await res.json();
   } catch (e) {
     data = { available: false, error: String(e) };
@@ -781,10 +787,41 @@ function renderActive() {
   }
 }
 
+async function loadCampaigns() {
+  try {
+    const res = await fetch("/api/campaigns", { cache: "no-store" });
+    const info = await res.json();
+    state.campaigns = info.campaigns || [];
+    state.campaign = info.default || null;
+  } catch (e) {
+    state.campaigns = [];
+    state.campaign = null;
+  }
+  const sel = document.getElementById("campaignSel");
+  if (state.campaigns.length > 1) {
+    sel.innerHTML = state.campaigns.map(c =>
+      '<option value="' + c.name + '"' +
+      (c.name === state.campaign ? " selected" : "") + ">" + c.label + "</option>").join("");
+    sel.style.display = "";
+    sel.addEventListener("change", () => {
+      state.campaign = sel.value;
+      // Selections and cached pixel rows belong to the previous campaign.
+      state.data = null;
+      state.pixelSel = {};
+      state.pixelData = {};
+      refresh();
+    });
+  } else {
+    sel.style.display = "none";
+  }
+}
+
 async function refresh() {
   let snap;
   try {
-    const res = await fetch("/api/progress", { cache: "no-store" });
+    const query = campaignQuery();
+    const res = await fetch("/api/progress" + (query ? "?" + query : ""),
+      { cache: "no-store" });
     snap = await res.json();
   } catch (e) {
     document.getElementById("error").innerHTML =
@@ -815,7 +852,7 @@ async function refresh() {
   renderActive();
 }
 
-refresh();
+loadCampaigns().then(refresh);
 setInterval(refresh, 15000);
 </script>
 </body>

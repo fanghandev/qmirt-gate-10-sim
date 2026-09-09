@@ -21,15 +21,22 @@ INPUT_STAGE="${INPUT_STAGE:-tasks}"
 SHARD_INDEX="${SHARD_INDEX:-${SLURM_ARRAY_TASK_ID:-0}}"
 SHARD_COUNT="${SHARD_COUNT:-1}"
 COMBINE_OUTPUT_DIR="${COMBINE_OUTPUT_DIR:-}"
+# Shard outputs are inputs to a later merge, so they must stay in the coords format.
+SPLIT_PER_HEAD="${SPLIT_PER_HEAD:-auto}"
 
 usage() {
     echo "Usage: $0 --campaign-dir DIR [--input-stage tasks|groups] [--shard-index N] [--shard-count N]"
     echo "          [--output-dir DIR] [--expected-tasks N] [--min-tasks N] [--require-complete]"
+    echo "          [--split-per-head|--no-split-per-head]"
     echo ""
     echo "Aggregates sparse SRMs into higher-level final SRMs. With --input-stage tasks it"
     echo "reads task_*/final_srm_*.npz; with --input-stage groups it reads group_*/final_srm_*.npz."
     echo "By default it combines whatever succeeded and records completeness in"
     echo "combined_srm_metadata.json."
+    echo ""
+    echo "--split-per-head writes one CSR SRM per detector head, shape (pixels, voxels),"
+    echo "instead of a single final_srm_<label>.npz. It is the default for a final merge"
+    echo "(--shard-count 1) and is disabled automatically for shard combines."
 }
 
 while [[ $# -gt 0 ]]; do
@@ -50,6 +57,8 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --require-complete) REQUIRE_COMPLETE=1; shift ;;
+        --split-per-head) SPLIT_PER_HEAD=1; shift ;;
+        --no-split-per-head) SPLIT_PER_HEAD=0; shift ;;
         --input-stage)
             [[ $# -ge 2 ]] || { echo "Missing value for --input-stage" >&2; exit 2; }
             INPUT_STAGE="$2"
@@ -124,9 +133,14 @@ if [[ "$EXPECTED_TASKS" -gt 0 ]]; then
     echo "Inputs expected: $EXPECTED_TASKS"
 fi
 
+if [[ "$SPLIT_PER_HEAD" == "auto" ]]; then
+    if [[ "$SHARD_COUNT" -gt 1 ]]; then SPLIT_PER_HEAD=0; else SPLIT_PER_HEAD=1; fi
+fi
+echo "Split per head: $SPLIT_PER_HEAD"
+
 combine_cmd=(
     python3
-    "$REPO_ROOT/payload/python/combine_brain_sparse_srm.py"
+    "$REPO_ROOT/payload/python/combine_spect_sparse_srm.py"
     --input-dir "$CAMPAIGN_DIR"
     --output-dir "$COMBINE_OUTPUT_DIR"
     --input-glob "${INPUT_PREFIX}_*/final_srm_{label}.npz"
@@ -137,6 +151,11 @@ combine_cmd=(
 )
 if [[ "$REQUIRE_COMPLETE" == "1" ]]; then
     combine_cmd+=(--require-complete)
+fi
+if [[ "$SPLIT_PER_HEAD" == "1" ]]; then
+    combine_cmd+=(--split-per-head)
+else
+    combine_cmd+=(--no-split-per-head)
 fi
 
 if [[ -f "$CONTAINER_SIF" ]] && [[ -n "$CONTAINER_EXEC" ]]; then

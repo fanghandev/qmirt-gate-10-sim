@@ -853,7 +853,13 @@ def run_simulation(config: dict, persist_data_dir: Path, args):
     print(f"Number of threads: {sim.number_of_threads}")
 
     output_stem = f"a_{job_array_id}_j_{job_array_task_id}"
-    add_actors(sim, output_dir, output_stem)
+    add_actors(
+        sim,
+        output_dir,
+        output_stem,
+        energy_resolution=args.energy_resolution,
+        energy_resolution_reference_kev=args.energy_resolution_reference_kev,
+    )
     add_stats_actor(sim, output_dir, output_stem)
     sim.run()
 
@@ -865,8 +871,18 @@ def add_stats_actor(sim: gate.Simulation, output_dir: Path, output_stem: str):
     stats_actor.output_filename = str(stats_path)
 
 
-def add_actors(sim: gate.Simulation, output_dir: Path, output_stem: str):
+def add_actors(
+    sim: gate.Simulation,
+    output_dir: Path,
+    output_stem: str,
+    energy_resolution: float = 0.10,
+    energy_resolution_reference_kev: float = 140.0,
+):
     pixel_array_name = [f"pixel_{i + 1}" for i in range(80)]
+    if energy_resolution < 0:
+        raise ValueError("energy_resolution must be >= 0")
+    blur_fwhm_kev = energy_resolution * energy_resolution_reference_kev
+    singles_root_path = output_dir / f"pixel_singles_{output_stem}.root"
 
     # Keep hits in-memory only as input to the singles chain.
     for i in range(80):
@@ -889,15 +905,25 @@ def add_actors(sim: gate.Simulation, output_dir: Path, output_stem: str):
             "PreStepUniqueVolumeIDAsInt",
         ]
         pixel_readout_actor = sim.add_actor(
-            "DigitizerReadoutActor", f"Pixel_{i + 1}_Singles"
+            "DigitizerReadoutActor", f"Pixel_{i + 1}_Readout"
         )
         pixel_readout_actor.input_digi_collection = pixel_hits_actor.name
         # pixel_readout_actor.group_volume = pixel_array_name[i]
         pixel_readout_actor.discretize_volume = pixel_array_name[i]
         pixel_readout_actor.policy = "EnergyWeightedCentroidPosition"
-        pixel_readout_actor.output_filename = (
-            output_dir / f"pixel_singles_{output_stem}.root"
+        pixel_readout_actor.output_filename = ""
+
+        # Named "Pixel_N_Singles" so the ROOT tree names stay stable for the
+        # downstream SRM builders.
+        pixel_blur_actor: gate.actors.digitizers.DigitizerBlurringActor = sim.add_actor(
+            "DigitizerBlurringActor", f"Pixel_{i + 1}_Singles"
         )
+        pixel_blur_actor.attached_to = pixel_array_name[i]
+        pixel_blur_actor.input_digi_collection = pixel_readout_actor.name
+        pixel_blur_actor.blur_attribute = "TotalEnergyDeposit"
+        pixel_blur_actor.blur_method = "Gaussian"
+        pixel_blur_actor.blur_fwhm = blur_fwhm_kev * gate.g4_units.keV
+        pixel_blur_actor.output_filename = singles_root_path
 
 
 def _resolve_xlsx_path(persistent_data_dir: Path, xlsx_path: str | None) -> Path:
@@ -1072,7 +1098,20 @@ def parse_args(args=None):
         "--fov-size-mm",
         type=float,
         default=210.0,
-        help="FOV size in mm. For box it's the side length; for sphere it's the radius.",
+        help="FOV size in mm. For box it's the side length; for sphere it's the diameter.",
+    )
+    parser.add_argument(
+        "--energy-resolution",
+        type=float,
+        default=0.10,
+        help="Gaussian energy blurring FWHM as a fraction of the reference energy. "
+        "Use 0 for no blurring.",
+    )
+    parser.add_argument(
+        "--energy-resolution-reference-kev",
+        type=float,
+        default=140.0,
+        help="Reference energy in keV at which --energy-resolution is specified.",
     )
     parsed_args = parser.parse_args(args)
     return parsed_args

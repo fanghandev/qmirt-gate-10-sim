@@ -425,7 +425,8 @@ def add_fov_volume_to_gate_sim(
         return source_volume
     if shape_name == "sphere":
         source_volume = sim.add_volume("Sphere", name="FOVSphere")
-        source_volume.rmax = float(size_mm) * gate.g4_units.mm
+        source_volume.rmin = 0.0
+        source_volume.rmax = float(size_mm) * 0.5 * gate.g4_units.mm
         source_volume.mother = "world"
         source_volume.material = "Air"
         return source_volume
@@ -465,7 +466,8 @@ def add_volume_source(
         return source_obj
     if fov_shape_name == "sphere":
         source.position.type = "sphere"
-        source.position.radius = fov_size * gate.g4_units.mm
+        # fov_size_mm is a diameter, matching add_fov_volume_to_gate_sim.
+        source.position.radius = fov_size * 0.5 * gate.g4_units.mm
         source_obj = sim.add_source(source, name=name)
         source_obj.attached_to = "FOVSphere"
         return source_obj
@@ -771,7 +773,7 @@ def parse_arguments():
         "--fov-size-mm",
         type=float,
         default=150.0,
-        help="FOV size in mm. For box, this is the side length; for sphere, it is the radius.",
+        help="FOV size in mm. For box, this is the side length; for sphere, it is the diameter.",
     )
 
     return parser.parse_args()

@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Convert one Gate ROOT chunk into sparse brain-SPECT SRM files."""
+"""Convert one Gate ROOT chunk into sparse SPECT SRM files.
+
+Works for any geometry whose singles trees are named ``Pixel_<crystal>_Singles``
+and whose ``PreStepUniqueVolumeID`` ends in the pixel index, which covers both the
+brain (73 heads) and cardiac (80 heads) scanners.
+"""
 
 from __future__ import annotations
 
@@ -24,7 +29,7 @@ def parse_resolutions(value: str) -> list[float]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Convert Gate brain-SPECT ROOT files into sparse SRMs."
+        description="Convert Gate SPECT ROOT files into sparse SRMs."
     )
     parser.add_argument("--input-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -40,13 +45,52 @@ def parse_args() -> argparse.Namespace:
         default=210.0,
         help="Cartesian reconstruction extent in mm; default is -105 to +105.",
     )
-    parser.add_argument("--energy-min-kev", type=float, default=139.3)
-    parser.add_argument("--energy-max-kev", type=float, default=140.7)
+    parser.add_argument(
+        "--pixels-per-head",
+        type=int,
+        default=625,
+        help="Detector pixels per head; singles outside this range are dropped.",
+    )
+    parser.add_argument(
+        "--output-stem",
+        default="srm",
+        help="Prefix for the output files, e.g. 'srm' -> srm_1mm.npz.",
+    )
+    parser.add_argument(
+        "--photopeak-kev",
+        type=float,
+        default=140.0,
+        help="Photopeak energy used to derive the energy window.",
+    )
+    parser.add_argument(
+        "--energy-window-percent",
+        type=float,
+        default=20.0,
+        help="Total energy window width as a percentage of --photopeak-kev; "
+        "ignored when both --energy-min-kev and --energy-max-kev are given.",
+    )
+    parser.add_argument("--energy-min-kev", type=float, default=None)
+    parser.add_argument("--energy-max-kev", type=float, default=None)
     parser.add_argument("--step-size", default="50 MB")
     parser.add_argument("--job-id", default="local")
     parser.add_argument("--task-id", default="0")
     parser.add_argument("--loop-id", default="0")
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    if args.photopeak_kev <= 0:
+        parser.error("--photopeak-kev must be positive")
+    if args.energy_window_percent <= 0:
+        parser.error("--energy-window-percent must be positive")
+    half_width_kev = args.photopeak_kev * args.energy_window_percent / 200.0
+    if args.energy_min_kev is None:
+        args.energy_min_kev = args.photopeak_kev - half_width_kev
+    if args.energy_max_kev is None:
+        args.energy_max_kev = args.photopeak_kev + half_width_kev
+    if args.energy_min_kev >= args.energy_max_kev:
+        parser.error("--energy-min-kev must be below --energy-max-kev")
+    if args.pixels_per_head <= 0:
+        parser.error("--pixels-per-head must be positive")
+    return args
 
 
 def resolution_label(resolution_mm: float) -> str:
@@ -95,6 +139,7 @@ def accumulate_batch(
     event_y: np.ndarray,
     event_z: np.ndarray,
     fov_size_mm: float,
+    pixels_per_head: int,
 ) -> int:
     valid_events = 0
     half_size = fov_size_mm * 0.5
@@ -111,7 +156,7 @@ def accumulate_batch(
             & (index_z >= 0)
             & (index_z < grid_size)
             & (pixel_ids >= 0)
-            & (pixel_ids < 625)
+            & (pixel_ids < pixels_per_head)
         )
         valid_events = max(valid_events, int(np.count_nonzero(valid_mask)))
         for pixel_id, x_bin, y_bin, z_bin in zip(
@@ -142,7 +187,9 @@ def save_outputs(
         entries = accumulators[resolution_mm]
         coords = np.asarray(list(entries), dtype=np.int32).reshape(-1, 5)
         counts = np.asarray(list(entries.values()), dtype=np.int64)
-        output_path = output_dir / f"srm_{resolution_label(resolution_mm)}.npz"
+        output_path = (
+            output_dir / f"{args.output_stem}_{resolution_label(resolution_mm)}.npz"
+        )
         np.savez_compressed(
             output_path,
             coords=coords,
@@ -165,6 +212,8 @@ def save_outputs(
         "loop_id": str(args.loop_id),
         "resolutions_mm": resolutions_mm,
         "fov_size_mm": args.fov_size_mm,
+        "photopeak_kev": args.photopeak_kev,
+        "energy_window_percent": args.energy_window_percent,
         "energy_min_kev": args.energy_min_kev,
         "energy_max_kev": args.energy_max_kev,
         "raw_events": raw_events,
@@ -234,6 +283,7 @@ def main() -> int:
                         event_y,
                         event_z,
                         args.fov_size_mm,
+                        args.pixels_per_head,
                     )
 
     save_outputs(
