@@ -157,10 +157,45 @@ echo "Partials (${FIRST_LABEL}): ${PARTIAL_COUNT}"
 if [[ "$EXPECTED_PARTIALS" != "0" ]]; then
     echo "Expected partials:  ${EXPECTED_PARTIALS}"
 fi
+
+SRM_LABELS="$(python3 - "$RESOLUTIONS_MM" <<'PY'
+import sys
+
+print(",".join(
+    f"{item.strip().replace('.', 'p')}mm"
+    for item in sys.argv[1].split(",")
+    if item.strip()
+))
+PY
+)"
+
+write_report() {
+    python3 "$REPO_ROOT/payload/python/report_campaign_progress.py" \
+        --campaign-dir "$LOCAL_DIR" \
+        --srm-dir "$OUTPUT_DIR" \
+        --srm-labels "$SRM_LABELS" \
+        --task-layout ospool \
+        --expected-tasks "$EXPECTED_PARTIALS" \
+        --output "${LOCAL_DIR}/progress.json"
+    echo "Dashboard report: ${LOCAL_DIR}/progress.json"
+}
+
 if [[ "$PARTIAL_COUNT" -eq 0 ]]; then
-    # A campaign that has not returned anything yet is normal on a timer, so this
-    # is not an error; a bad mount or batch id already failed above.
-    echo "No partial SRMs yet in $PARTIAL_DIR; nothing to combine."
+    # Still publish a zero-progress report: the dashboard picks the newest campaign
+    # that has one, so without this a freshly submitted campaign stays invisible and
+    # the old one keeps being displayed.
+    mkdir -p "$PARTIAL_DIR"
+    echo "No partial SRMs yet in $PARTIAL_DIR; publishing zero progress."
+    write_report
+    exit 0
+fi
+
+# Combining rereads every partial, so skip the work when no new ones arrived.
+STAMP_FILE="${LOCAL_DIR}/.last_combined_partials"
+LAST_COUNT="$(cat "$STAMP_FILE" 2>/dev/null || echo 0)"
+if [[ "$FORCE" -eq 0 && "$PARTIAL_COUNT" == "$LAST_COUNT" ]] \
+    && compgen -G "${OUTPUT_DIR}/final_srm_*_head_*.npz" > /dev/null; then
+    echo "No new partials since the last combine (${LAST_COUNT}); skipping."
     exit 0
 fi
 
@@ -230,15 +265,4 @@ fi
 echo "Done. Per-head SRMs in $OUTPUT_DIR"
 printf '%s\n' "$PARTIAL_COUNT" > "$STAMP_FILE"
 
-python3 "$REPO_ROOT/payload/python/report_campaign_progress.py" \
-    --campaign-dir "$LOCAL_DIR" \
-    --srm-dir "$OUTPUT_DIR" \
-    --srm-labels "$(python3 - "$RESOLUTIONS_MM" <<'PY'
-import sys
-print(",".join(f"{item.strip().replace('.', 'p')}mm" for item in sys.argv[1].split(",") if item.strip()))
-PY
-)" \
-    --task-layout ospool \
-    --expected-tasks "$EXPECTED_PARTIALS" \
-    --output "${LOCAL_DIR}/progress.json"
-echo "Dashboard report: ${LOCAL_DIR}/progress.json"
+write_report
