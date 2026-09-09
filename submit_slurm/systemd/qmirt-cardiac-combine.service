@@ -7,6 +7,10 @@ Wants=network-online.target
 Type=oneshot
 # scipy and numpy live in the opengate micromamba env, not in the system python.
 Environment=PATH=%h/.local/share/micromamba/envs/opengate/bin:/usr/local/bin:/usr/bin:/bin
+# Optional: set CARDIAC_COMBINE_ARGS to pin a batch instead of following --latest.
+# The leading '-' makes a missing file harmless.
+EnvironmentFile=-%h/Work/RPIL/QMIRT/qmirt-gate-10-sim/submit_htcondor/cardiac.env
 # Reads the OSPool sshfs mount, extracts new job tarballs, and rebuilds the
 # per-head SRMs. Skips itself when no new partials arrived since the last run.
-ExecStart=/bin/bash %h/Work/RPIL/QMIRT/qmirt-gate-10-sim/submit_htcondor/run_cardiac_campaign_combine.sh --latest
+# bash -c so CARDIAC_COMBINE_ARGS is word-split into separate arguments.
+ExecStart=/bin/bash -c 'exec %h/Work/RPIL/QMIRT/qmirt-gate-10-sim/submit_htcondor/run_cardiac_campaign_combine.sh ${CARDIAC_COMBINE_ARGS:---latest}'

@@ -243,3 +243,4 @@ results/cardiac_spect/data
 **/dashboard_demo/
 # HTCondor per-batch logs and staged job inputs
 submit_htcondor/logs/
+submit_htcondor/cardiac.env
