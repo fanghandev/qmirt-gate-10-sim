@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically aggregate QMIRT cardiac SRM partials
+
+[Timer]
+OnBootSec=5min
+# Combining rereads every partial, so run less often than the brain pull; the
+# service itself skips when nothing new arrived.
+OnUnitActiveSec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

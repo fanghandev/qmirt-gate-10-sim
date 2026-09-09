@@ -26,16 +26,18 @@ SHARD_COUNT="1"
 MIN_INPUTS="1"
 EXPECTED_PARTIALS="0"
 EXTRACT=1
+FORCE=0
 
 usage() {
     echo "Usage: $0 (--latest | --batch BATCH_ID | --source-dir DIR) [--local-dir DIR]"
     echo "          [--output-dir DIR] [--resolutions-mm 1,1.5,2] [--num-heads N]"
     echo "          [--pixels-per-head N] [--shard-count N] [--min-inputs N]"
-    echo "          [--expected-partials N] [--no-extract]"
+    echo "          [--expected-partials N] [--no-extract] [--force]"
     echo ""
     echo "Reads srm_c_*_p_*.tar.gz from the OSPool mount (${OSPOOL_MOUNT}),"
     echo "extracts to <local-dir>/partials, and writes final_srm_<label>_head_01..NN.npz."
     echo "Extraction is incremental, so re-running only unpacks jobs that finished since."
+    echo "A combine is skipped when no new partials arrived; --force overrides that."
     echo ""
     echo "--shard-count N does a tree reduction: N partial merges, then one final merge."
     echo "Use it when a single pass over all partials will not fit in memory."
@@ -55,6 +57,7 @@ while [[ $# -gt 0 ]]; do
         --min-inputs) MIN_INPUTS="$2"; shift 2 ;;
         --expected-partials) EXPECTED_PARTIALS="$2"; shift 2 ;;
         --no-extract) EXTRACT=0; shift ;;
+        --force) FORCE=1; shift ;;
         --help|-h) usage; exit 0 ;;
         *) echo "Unexpected argument: $1" >&2; usage; exit 2 ;;
     esac
@@ -155,8 +158,19 @@ if [[ "$EXPECTED_PARTIALS" != "0" ]]; then
     echo "Expected partials:  ${EXPECTED_PARTIALS}"
 fi
 if [[ "$PARTIAL_COUNT" -eq 0 ]]; then
-    echo "Error: no partial SRMs to combine in $PARTIAL_DIR" >&2
-    exit 1
+    # A campaign that has not returned anything yet is normal on a timer, so this
+    # is not an error; a bad mount or batch id already failed above.
+    echo "No partial SRMs yet in $PARTIAL_DIR; nothing to combine."
+    exit 0
+fi
+
+# Combining rereads every partial, so skip the work when no new ones arrived.
+STAMP_FILE="${LOCAL_DIR}/.last_combined_partials"
+LAST_COUNT="$(cat "$STAMP_FILE" 2>/dev/null || echo 0)"
+if [[ "$FORCE" -eq 0 && "$PARTIAL_COUNT" == "$LAST_COUNT" ]] \
+    && compgen -G "${OUTPUT_DIR}/final_srm_*_head_*.npz" > /dev/null; then
+    echo "No new partials since the last combine (${LAST_COUNT}); skipping."
+    exit 0
 fi
 
 combine() {
@@ -195,6 +209,7 @@ else
 fi
 
 echo "Done. Per-head SRMs in $OUTPUT_DIR"
+printf '%s\n' "$PARTIAL_COUNT" > "$STAMP_FILE"
 
 python3 "$REPO_ROOT/payload/python/report_campaign_progress.py" \
     --campaign-dir "$LOCAL_DIR" \
