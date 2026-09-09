@@ -103,7 +103,7 @@ while [[ $# -gt 0 ]]; do
         --cpus-per-task) CPUS_PER_TASK="$2"; shift 2 ;;
         --time-limit) TIME_LIMIT="$2"; shift 2 ;;
         --mem-gb) MEM_GB="$2"; MEM_GB_SET=1; shift 2 ;;
-        --partition) PARTITION="$2"; shift 2 ;;
+        --partition) PARTITION="$2"; PARTITION_SET=1; shift 2 ;;
         --account|-A) ACCOUNT="$2"; shift 2 ;;
         --cluster) CLUSTER="$2"; shift 2 ;;
         --project-dir) PROJECT_DIR="$2"; shift 2 ;;
@@ -263,6 +263,22 @@ if [[ ! " $VALID_PARTITIONS " =~ " $PARTITION " ]]; then
     exit 1
 fi
 
+# Expanse's shared-normal QOS allows cpu=127, so a 128-thread job on shared is
+# rejected with QOSMaxCpuPerJobLimit. That thread count is a whole node anyway.
+if [[ "$CLUSTER" == "expanse" ]] && [[ "$PARTITION" == "shared" || "$PARTITION" == "ind-shared" ]]; then
+    SHARED_CPU_CAP=127
+    if [[ "$CPUS_PER_TASK" -gt "$SHARED_CPU_CAP" ]]; then
+        if [[ -n "${PARTITION_SET:-}" ]]; then
+            echo "Error: --cpus-per-task ${CPUS_PER_TASK} exceeds the Expanse ${PARTITION} QOS limit of ${SHARED_CPU_CAP} CPUs."
+            echo "       Slurm rejects this with QOSMaxCpuPerJobLimit."
+            echo "       Use --cpus-per-task ${SHARED_CPU_CAP}, or --partition compute for a whole node."
+            exit 1
+        fi
+        PARTITION="compute"
+        echo "Switched to partition compute: ${CPUS_PER_TASK} CPUs exceeds the ${SHARED_CPU_CAP}-CPU limit of the shared QOS"
+    fi
+fi
+
 # Auto-tune memory for high-thread jobs only when user did not pass --mem-gb.
 if [[ -z "${MEM_GB_SET:-}" ]] && [[ "$CPUS_PER_TASK" -ge 64 ]] && [[ "$TEST_MODE" -eq 0 ]]; then
     case "$CLUSTER" in
@@ -332,7 +348,15 @@ if [[ -n "$CONCURRENT_LIMIT" ]]; then
     fi
 fi
 
-COMBINE_PARTITION="${COMBINE_PARTITION:-$PARTITION}"
+# The combine and reporter are small; on Expanse the compute partition bills a whole
+# node per job, so never inherit it from the simulation.
+if [[ "$CLUSTER" == "expanse" ]] && [[ "$PARTITION" == "compute" ]]; then
+    HELPER_PARTITION="shared"
+else
+    HELPER_PARTITION="$PARTITION"
+fi
+
+COMBINE_PARTITION="${COMBINE_PARTITION:-$HELPER_PARTITION}"
 if [[ "$COMBINE_AFTER" -eq 1 ]]; then
     if ! [[ "$COMBINE_CPUS" =~ ^[1-9][0-9]*$ ]]; then echo "combine_cpus must be a positive integer"; exit 1; fi
     if ! [[ "$COMBINE_MEM_GB" =~ ^[1-9][0-9]*$ ]]; then echo "combine_mem_gb must be a positive integer"; exit 1; fi
@@ -347,7 +371,7 @@ if [[ "$COMBINE_AFTER" -eq 1 ]]; then
     fi
 fi
 
-REPORT_PARTITION="${REPORT_PARTITION:-$PARTITION}"
+REPORT_PARTITION="${REPORT_PARTITION:-$HELPER_PARTITION}"
 if [[ "$AUTO_REPORT" -eq 1 ]]; then
     if ! [[ "$REPORT_CPUS" =~ ^[1-9][0-9]*$ ]]; then echo "report_cpus must be a positive integer"; exit 1; fi
     if ! [[ "$REPORT_MEM_GB" =~ ^[1-9][0-9]*$ ]]; then echo "report_mem_gb must be a positive integer"; exit 1; fi
