@@ -573,6 +573,7 @@ cat > "$MANIFEST_FILE" <<EOF
     "expected_events_per_loop": ${EXPECTED_EVENTS_PER_LOOP},
     "expected_events_per_job": ${EXPECTED_EVENTS_PER_JOB},
     "expected_events_total": ${EXPECTED_EVENTS_TOTAL},
+    "geometry_provenance_file": "geometry_provenance.json",
   "sparse_srm": ${SPARSE_SRM},
   "srm_fov_size_mm": ${SRM_FOV_SIZE_MM},
   "profile_resources": ${PROFILE_RESOURCES},
@@ -595,6 +596,37 @@ EOF
 if [[ "$DRY_RUN" -eq 0 ]]; then
     cp "$MANIFEST_FILE" "${DATA_DIR}/campaign_manifest.json"
 fi
+
+update_submission_manifests() {
+    local array_job_id="$1"
+    local report_job_id="${2:-}"
+    local group_job_id="${3:-}"
+    local combine_job_id="${4:-}"
+    local manifest
+    for manifest in "$MANIFEST_FILE" "${DATA_DIR}/campaign_manifest.json"; do
+        [[ -f "$manifest" ]] || continue
+        python3 - "$manifest" "$array_job_id" "$report_job_id" "$group_job_id" "$combine_job_id" <<'PY'
+import json
+import os
+import sys
+
+path, array_job_id, report_job_id, group_job_id, combine_job_id = sys.argv[1:]
+with open(path) as handle:
+    manifest = json.load(handle)
+manifest["slurm_jobs"] = {
+    "array": array_job_id,
+    "progress_reporter": report_job_id or None,
+    "group_combine": group_job_id or None,
+    "campaign_combine": combine_job_id or None,
+}
+temporary_path = f"{path}.tmp"
+with open(temporary_path, "w") as handle:
+    json.dump(manifest, handle, indent=2)
+    handle.write("\n")
+os.replace(temporary_path, path)
+PY
+    done
+}
 
 echo "Simulation wrapper: ${SIM_WRAPPER}"
 echo "Cluster mode: ${CLUSTER}"
@@ -713,3 +745,6 @@ EOF
     echo "Progress file: ${DATA_DIR}/progress.json"
     echo "Reporter sbatch: ${REPORT_SBATCH_FILE}"
 fi
+
+update_submission_manifests "$ARRAY_JOB_ID" "${REPORT_JOB_ID:-}" "${GROUP_JOB_ID:-}" "${COMBINE_JOB_ID:-}"
+echo "Updated campaign manifests with submitted Slurm job IDs"

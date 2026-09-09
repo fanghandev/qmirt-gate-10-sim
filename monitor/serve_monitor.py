@@ -64,10 +64,18 @@ class ProgressCache:
             manifest = json.loads(manifest_path.read_text())
         except Exception:  # noqa: BLE001 - manifest is optional context
             return {}
-        return {
+        result = {
             "num_loops": manifest.get("num_loops"),
             "job_count": manifest.get("job_count"),
         }
+        provenance_name = manifest.get("geometry_provenance_file")
+        if isinstance(provenance_name, str):
+            provenance_path = manifest_path.parent / provenance_name
+            try:
+                result["geometry"] = json.loads(provenance_path.read_text())
+            except Exception:  # noqa: BLE001 - provenance is optional context
+                pass
+        return result
 
     def refresh(self) -> None:
         try:

@@ -180,6 +180,21 @@ build_sparse_worker_command() {
     fi
 }
 
+write_campaign_geometry_provenance() {
+    local provenance_cmd=(
+        python3
+        "$REPO_ROOT/payload/python/write_brain_spect_geometry_provenance.py"
+        --output "$CAMPAIGN_DIR/geometry_provenance.json"
+        --fov-size-mm "$SRM_FOV_SIZE_MM"
+    )
+    if [[ ${#APPTAINER_CMD[@]} -gt 0 ]]; then
+        provenance_cmd=("${APPTAINER_CMD[@]}" "${provenance_cmd[@]}")
+    fi
+    "${provenance_cmd[@]}"
+}
+
+write_campaign_geometry_provenance
+
 echo "Starting SLURM job $JOB_ID task $TASK_ID..."
 echo "Campaign dir: $CAMPAIGN_DIR"
 echo "Task output dir: $OUT_DIR"

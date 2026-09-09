@@ -125,6 +125,22 @@ STAGE_DIR="${LOG_DIR}/stage"
 
 mkdir -p "$DATA_DIR" "$LOG_DIR"
 
+# Capture the resolved scanner geometry once in the durable batch directory.
+# The OSPool access point has the campaign SIF available locally, while its host
+# Python intentionally does not carry the simulation dependencies.
+LOCAL_CONTAINER_IMAGE="${CONTAINER_IMAGE#osdf:///}"
+if ! command -v apptainer >/dev/null 2>&1 || [[ ! -f "$LOCAL_CONTAINER_IMAGE" ]]; then
+    echo "Error: cannot generate cardiac geometry provenance with $LOCAL_CONTAINER_IMAGE" >&2
+    exit 1
+fi
+apptainer exec \
+    --bind "$REPO_ROOT:$REPO_ROOT" \
+    --bind "$DATA_DIR:$DATA_DIR" \
+    "$LOCAL_CONTAINER_IMAGE" \
+    python3 "$REPO_ROOT/payload/python/write_cardiac_spect_geometry_provenance.py" \
+    --output "$DATA_DIR/geometry_provenance.json" \
+    --fov-size-mm "$FOV_SIZE_MM"
+
 # transfer_input_files is re-sent by the access point for every job, so keep it
 # minimal: stage only what a cardiac job opens, or hand the whole payload to OSDF
 # where the site cache serves it once per site instead of once per job.
@@ -197,6 +213,7 @@ cat > "${DATA_DIR}/campaign_manifest.json" <<EOF
   "num_chunks": ${NUM_CHUNKS},
   "chunk_duration_s": ${CHUNK_DURATION_S},
   "fov_size_mm": ${FOV_SIZE_MM},
+    "geometry_provenance_file": "geometry_provenance.json",
   "resolutions_mm": "${RESOLUTIONS_MM}",
   "expected_partials": $((JOB_COUNT * NUM_LOOPS)),
   "payload_input": "${TRANSFER_INPUT}",
@@ -220,4 +237,26 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     exit 0
 fi
 
-condor_submit "$SUB_FILE" out_dir="$DATA_DIR" log_dir="$LOG_DIR"
+submission_output="$(condor_submit "$SUB_FILE" out_dir="$DATA_DIR" log_dir="$LOG_DIR")"
+printf '%s\n' "$submission_output"
+if [[ "$submission_output" =~ [Cc]luster[[:space:]]+([0-9]+) ]]; then
+    CONDOR_CLUSTER_ID="${BASH_REMATCH[1]}"
+    python3 - "$DATA_DIR/campaign_manifest.json" "$CONDOR_CLUSTER_ID" <<'PY'
+import json
+import os
+import sys
+
+path = sys.argv[1]
+with open(path) as handle:
+    manifest = json.load(handle)
+manifest["condor_cluster_id"] = sys.argv[2]
+temporary_path = f"{path}.tmp"
+with open(temporary_path, "w") as handle:
+    json.dump(manifest, handle, indent=2)
+    handle.write("\n")
+os.replace(temporary_path, path)
+PY
+    echo "Recorded HTCondor cluster ID ${CONDOR_CLUSTER_ID} in campaign manifest."
+else
+    echo "Warning: unable to parse HTCondor cluster ID from submission output." >&2
+fi

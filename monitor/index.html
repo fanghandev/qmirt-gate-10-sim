@@ -692,6 +692,54 @@
 
       /* ---------- tabs ---------- */
 
+      function geometryProvenancePanel(geometry) {
+        if (!geometry) return "";
+        const fov = geometry.fov || {};
+        const shielding = geometry.shielding || {};
+        const detector = geometry.detector || {};
+        const pattern = geometry.pinhole_pattern || {};
+        const variants = pattern.collimator_variants || [];
+        const widths = variants
+          .map((variant) => fmtNum(variant.w_pinhole))
+          .join(", ");
+        const pointCloud = pattern.point_cloud || {};
+        const moduleMesh = detector.module_mesh || {};
+        const shieldMesh = shielding.source || {};
+        const hashes = [pointCloud, moduleMesh, shieldMesh]
+          .filter((source) => source.path && source.sha256)
+          .map((source) => source.path + " " + source.sha256.slice(0, 12))
+          .join(" | ");
+        return (
+          '<section class="panel" style="margin-top:16px"><h2>Geometry</h2>' +
+          '<div class="grid">' +
+          card(
+            "FOV",
+            fmtNum(fov.size_mm) + " mm " + (fov.shape || ""),
+            "source region",
+          ) +
+          card(
+            "Shielding",
+            shielding.enabled ? "enabled" : "disabled",
+            shielding.material || "",
+          ) +
+          card(
+            "Detector",
+            fmtInt(detector.module_count) + " modules",
+            (detector.crystal || {}).n_pixels
+              ? detector.crystal.n_pixels.join(" x ") + " pixels/module"
+              : "",
+          ) +
+          card(
+            "Pinhole widths",
+            widths ? widths + " mm" : "unavailable",
+            (pattern.mapping_mode || "") + " mapping",
+          ) +
+          '</div><div class="sub" style="margin-top:12px">Geometry input SHA-256 prefixes: ' +
+          (hashes || "unavailable") +
+          "</div></section>"
+        );
+      }
+
       function buildOverview(p) {
         const t = p.tasks,
           ev = p.events,
@@ -797,6 +845,7 @@
             fmtInt(ev.loops_in_flight) + " in flight",
           ) +
           "</section>" +
+          geometryProvenancePanel(mf.geometry) +
           '<section class="charts">' +
           panel("Per-task wall time", "ovWall") +
           panel("Per-task primaries", "ovPrim") +
