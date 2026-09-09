@@ -9,10 +9,10 @@ simulates, converts its own output to a sparse SRM, deletes the ROOT files, and
 returns a small tarball. A campaign of 10,000 jobs therefore moves megabytes rather
 than terabytes.
 
-| Stage | Runs on | Output |
-| :--- | :--- | :--- |
-| simulation + sparse SRM | OSPool execute node | `srm_c_<cluster>_p_<proc>.tar.gz` |
-| campaign combine + 80-head split | workstation | `final_srm_<label>_head_01..80.npz` |
+| Stage                            | Runs on             | Output                              |
+| :------------------------------- | :------------------ | :---------------------------------- |
+| simulation + sparse SRM          | OSPool execute node | `srm_c_<cluster>_p_<proc>.tar.gz`   |
+| campaign combine + 80-head split | workstation         | `final_srm_<label>_head_01..80.npz` |
 
 Cardiac geometry is 80 heads × 625 pixels (25 × 25). The sparse coordinates inside a
 partial SRM are `(CrystalID, PixelID, x_bin, y_bin, z_bin)`.
@@ -58,11 +58,11 @@ The launcher calls this automatically, so normally you never run it by hand. The
 archive holds `payload/python`, `persistent_data/{cardiac_spect,GateMaterials.db}` and
 `qmirt/src` — 993 KB compressed — and the wrapper unpacks it in the sandbox.
 
-| Approach | Per job from the AP | 10,000 jobs |
-| :--- | ---: | ---: |
-| whole repo | 15.8 MB | 154 GB |
-| trimmed staging (`--no-osdf`) | 2.3 MB | 22 GB |
-| OSDF (default) | ~0 | ~0, cached per site |
+| Approach                      | Per job from the AP |         10,000 jobs |
+| :---------------------------- | ------------------: | ------------------: |
+| whole repo                    |             15.8 MB |              154 GB |
+| trimmed staging (`--no-osdf`) |              2.3 MB |               22 GB |
+| OSDF (default)                |                  ~0 | ~0, cached per site |
 
 The filename embeds a **content hash**, which matters: OSDF caches key on path, so
 republishing under a fixed name can leave execute nodes reading a stale payload for
@@ -81,13 +81,13 @@ The resolved input is recorded as `payload_input` in `campaign_manifest.json`.
 
 Defaults:
 
-| Setting | Value |
-| :--- | :--- |
-| FOV | 210 mm sphere **diameter** (grid is the ±105 mm cube) |
-| Resolutions | 1, 1.5, 2 mm → 210³, 140³, 105³ voxels |
-| Energy window | 20% at 140 keV (126–154 keV) |
-| Energy blurring | 10% FWHM Gaussian at 140 keV |
-| Activity | 5e6 Bq × 100 chunks × 1 s |
+| Setting         | Value                                                 |
+| :-------------- | :---------------------------------------------------- |
+| FOV             | 210 mm sphere **diameter** (grid is the ±105 mm cube) |
+| Resolutions     | 1, 1.5, 2 mm → 210³, 140³, 105³ voxels                |
+| Energy window   | 20% at 140 keV (126–154 keV)                          |
+| Energy blurring | 10% FWHM Gaussian at 140 keV                          |
+| Activity        | 5e6 Bq × 100 chunks × 1 s                             |
 
 The launcher rejects a `--fov-size-mm` that any requested resolution does not divide
 evenly, so that failure surfaces at submit time rather than after the simulation.
@@ -119,11 +119,11 @@ that finished since the last run.
 
 Paths are configurable by environment variable:
 
-| Variable | Default |
-| :--- | :--- |
-| `OSPOOL_MOUNT` | `~/ospool` |
-| `CAMPAIGN_SUBDIR` | `cardiac_spect_srm` |
-| `LOCAL_ROOT` | `/data/fanghan/opengate_sim/data/cardiac_spect` |
+| Variable          | Default                                         |
+| :---------------- | :---------------------------------------------- |
+| `OSPOOL_MOUNT`    | `~/ospool`                                      |
+| `CAMPAIGN_SUBDIR` | `cardiac_spect_srm`                             |
+| `LOCAL_ROOT`      | `/data/fanghan/opengate_sim/data/cardiac_spect` |
 
 ### Large campaigns
 
@@ -134,7 +134,8 @@ thousands of partials that will not fit in memory, so use a tree reduction:
 ./submit_htcondor/run_cardiac_campaign_combine.sh --latest --shard-count 16
 ```
 
-That merges the partials in 16 independent groups, then merges the 16 group results and
+This assigns partials to 16 durable deterministic groups. Later runs merge only newly
+extracted partials into their affected groups, then merge the compact group results and
 splits the outcome per head. The result is bit-identical to the single-pass combine.
 
 ## Output format

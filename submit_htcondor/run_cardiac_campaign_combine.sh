@@ -22,9 +22,11 @@ OUTPUT_DIR=""
 RESOLUTIONS_MM="1,1.5,2"
 NUM_HEADS="80"
 PIXELS_PER_HEAD="625"
-SHARD_COUNT="1"
+SHARD_COUNT="16"
+SHARD_WORKERS="${SHARD_WORKERS:-8}"
 MIN_INPUTS="1"
 EXPECTED_PARTIALS="0"
+CONDOR_CLUSTER_ID="${CONDOR_CLUSTER_ID:-}"
 EXTRACT=1
 FORCE=0
 
@@ -127,6 +129,11 @@ print(json.load(open(sys.argv[1])).get('expected_partials', 0))
     fi
 fi
 
+if [[ -z "$CONDOR_CLUSTER_ID" ]]; then
+    CONDOR_CLUSTER_ID="$(find "$SOURCE_DIR" -maxdepth 1 -type f -name 'srm_c_*_p_*.tar.gz' -printf '%f\n' \
+        | sed -nE 's/^srm_c_([0-9]+)_p_[0-9]+\.tar\.gz$/\1/p' | sort -u | head -n 1)"
+fi
+
 if [[ "$EXTRACT" -eq 1 ]]; then
     mkdir -p "$PARTIAL_DIR"
     extracted=0
@@ -170,13 +177,17 @@ PY
 )"
 
 write_report() {
-    python3 "$REPO_ROOT/payload/python/report_campaign_progress.py" \
+    report_cmd=(python3 "$REPO_ROOT/payload/python/report_campaign_progress.py" \
         --campaign-dir "$LOCAL_DIR" \
         --srm-dir "$OUTPUT_DIR" \
         --srm-labels "$SRM_LABELS" \
         --task-layout ospool \
         --expected-tasks "$EXPECTED_PARTIALS" \
-        --output "${LOCAL_DIR}/progress.json"
+        --output "${LOCAL_DIR}/progress.json")
+    if [[ -n "$CONDOR_CLUSTER_ID" ]]; then
+        report_cmd+=(--condor-cluster-id "$CONDOR_CLUSTER_ID")
+    fi
+    "${report_cmd[@]}"
     echo "Dashboard report: ${LOCAL_DIR}/progress.json"
 }
 
@@ -196,6 +207,7 @@ LAST_COUNT="$(cat "$STAMP_FILE" 2>/dev/null || echo 0)"
 if [[ "$FORCE" -eq 0 && "$PARTIAL_COUNT" == "$LAST_COUNT" ]] \
     && compgen -G "${OUTPUT_DIR}/final_srm_*_head_*.npz" > /dev/null; then
     echo "No new partials since the last combine (${LAST_COUNT}); skipping."
+    write_report
     exit 0
 fi
 
@@ -207,15 +219,6 @@ if [[ "$FORCE" -eq 0 && "$PARTIAL_COUNT" == "$LAST_COUNT" ]] \
     echo "No new partials since the last combine (${LAST_COUNT}); skipping."
     exit 0
 fi
-
-combine() {
-    python3 "$REPO_ROOT/payload/python/combine_spect_sparse_srm.py" \
-        --resolutions-mm "$RESOLUTIONS_MM" \
-        --num-heads "$NUM_HEADS" \
-        --pixels-per-head "$PIXELS_PER_HEAD" \
-        --min-inputs "$MIN_INPUTS" \
-        "$@"
-}
 
 # Stragglers are normal, so the SRM is only interpretable against the primaries
 # that actually produced it. Sum them from the same job tarballs that were combined.
@@ -234,33 +237,16 @@ PY
 )"
 echo "Simulated primaries: ${SIMULATED_PRIMARIES}"
 
-if [[ "$SHARD_COUNT" -gt 1 ]]; then
-    for ((shard = 0; shard < SHARD_COUNT; shard++)); do
-        echo "Shard ${shard}/${SHARD_COUNT}..."
-        combine \
-            --input-dir "$PARTIAL_DIR" \
-            --output-dir "${LOCAL_DIR}/group_${shard}" \
-            --input-glob 'srm_c_*_{label}.npz' \
-            --shard-index "$shard" \
-            --shard-count "$SHARD_COUNT" \
-            --no-split-per-head
-    done
-    echo "Final merge over ${SHARD_COUNT} shards..."
-    combine \
-        --input-dir "$LOCAL_DIR" \
-        --output-dir "$OUTPUT_DIR" \
-        --input-glob 'group_*/final_srm_{label}.npz' \
-        --expected-inputs "$SHARD_COUNT" \
-        --simulated-primaries "$SIMULATED_PRIMARIES" \
-        --split-per-head
-else
-    combine \
-        --input-dir "$PARTIAL_DIR" \
-        --output-dir "$OUTPUT_DIR" \
-        --input-glob 'srm_c_*_{label}.npz' \
-        --simulated-primaries "$SIMULATED_PRIMARIES" \
-        --split-per-head
-fi
+python3 "$REPO_ROOT/payload/python/incremental_sparse_srm_aggregate.py" \
+    --input-dir "$PARTIAL_DIR" \
+    --output-dir "$OUTPUT_DIR" \
+    --input-glob 'srm_c_*_{label}.npz' \
+    --resolutions-mm "$RESOLUTIONS_MM" \
+    --num-heads "$NUM_HEADS" \
+    --pixels-per-head "$PIXELS_PER_HEAD" \
+    --shard-count "$SHARD_COUNT" \
+    --workers "$SHARD_WORKERS" \
+    --simulated-primaries "$SIMULATED_PRIMARIES"
 
 echo "Done. Per-head SRMs in $OUTPUT_DIR"
 printf '%s\n' "$PARTIAL_COUNT" > "$STAMP_FILE"

@@ -112,6 +112,16 @@ bash submit_slurm/run_spect_sim_slurm.sh brain \
 
 The default sparse outputs are `final_srm_1mm.npz`, `final_srm_1p5mm.npz`, and `final_srm_2mm.npz`. Intermediate ROOT files are placed under `${SLURM_TMPDIR}`, `${TMPDIR}`, or `SCRATCH_ROOT` and are removed only after successful conversion. Use `LOCAL_SCRATCH_ROOT` to select another node-local directory.
 
+To incrementally aggregate completed brain array-task SRMs on the workstation, run:
+
+```bash
+SHARD_COUNT=16 bash submit_slurm/run_brain_campaign_incremental_combine.sh \
+  /data/fanghan/opengate_sim/data/brain_spect/<batch_id>
+```
+
+The reducer records every consumed input in `.incremental_srm_state/ledger.json` and
+merges only newly completed task SRMs on subsequent runs.
+
 The sparse worker currently reconstructs a Cartesian extent of `[-fov_size_mm/2, fov_size_mm/2)` while the existing simulation uses the current FOV arguments unchanged. Confirm the intended spherical source radius before production runs because the existing sphere volume and source-radius expressions do not currently use the same interpretation of `fov-size-mm`.
 
 ## Detector Pixel Mapping
@@ -147,7 +157,7 @@ The orientation transforms mean:
 - **Flip row**: reverse the row numbering across the face. For a `25 x 25`
   face, `row` becomes `24 - row`.
 - **Flip column**: reverse the column numbering across the face. For a `25 x
- 25` face, `column` becomes `24 - column`.
+25` face, `column` becomes `24 - column`.
 
 These operations change how the stored pixel ID is displayed and mapped to the
 geometry; they do not modify the pixel ID or the SRM data. Apply the transforms

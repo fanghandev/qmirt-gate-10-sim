@@ -61,6 +61,16 @@ def parse_args() -> argparse.Namespace:
         help="Slurm array job id; enables sacct wait/wall-clock timing.",
     )
     parser.add_argument(
+        "--condor-cluster-id",
+        default="",
+        help="HTCondor cluster id; enables live OSPool task completion counts.",
+    )
+    parser.add_argument(
+        "--condor-host",
+        default="ospool",
+        help="SSH host that runs condor_q and condor_history.",
+    )
+    parser.add_argument(
         "--srm-labels",
         default="1mm,1p5mm,2mm",
         help="Comma-separated resolution labels to summarize.",
@@ -430,6 +440,67 @@ def collect_sacct(job_id: str) -> dict:
             for e in elements
             if e["submit"] is not None and e["task_id"] is not None
         },
+    }
+
+
+def collect_condor(cluster_id: str, host: str) -> dict:
+    """Collect live HTCondor job states without conflating them with local SRMs."""
+    command = [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        host,
+        (
+            f"condor_q {cluster_id} -limit 1 -long | "
+            "grep -E '^(TotalSubmitProcs|JobMaterializeNextProcId) ='; "
+            "echo; "
+            f"condor_q {cluster_id} -autoformat JobStatus; "
+            "echo; "
+            f"condor_history {cluster_id} -limit 20000 "
+            "-constraint 'JobStatus == 4' -autoformat ProcId"
+        ),
+    ]
+    try:
+        completed = subprocess.run(
+            command, capture_output=True, text=True, timeout=90, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {"available": False, "reason": "OSPool query unavailable"}
+    if completed.returncode != 0:
+        return {"available": False, "reason": completed.stderr.strip()[:200]}
+
+    total = 0
+    materialized = 0
+    live_states: dict[str, int] = {}
+    history_completed = 0
+    section = "attributes"
+    for line in completed.stdout.splitlines():
+        line = line.strip()
+        if line == "":
+            section = "live" if section == "attributes" else "history"
+            continue
+        if section == "attributes":
+            key, _, value = line.partition(" = ")
+            if key == "TotalSubmitProcs":
+                total = int(value)
+            elif key == "JobMaterializeNextProcId":
+                materialized = int(value)
+        elif section == "live":
+            if line.isdigit():
+                live_states[line] = live_states.get(line, 0) + 1
+        else:
+            history_completed += 1
+
+    return {
+        "available": True,
+        "cluster_id": cluster_id,
+        "expected": total,
+        "materialized": materialized,
+        "completed": history_completed,
+        "running": live_states.get("2", 0),
+        "idle": live_states.get("1", 0),
+        "held": live_states.get("5", 0),
+        "unmaterialized": max(0, total - materialized),
     }
 
 
@@ -1038,6 +1109,24 @@ def main() -> int:
 
     if args.job_id:
         report["slurm"] = collect_sacct(args.job_id)
+    if args.condor_cluster_id:
+        condor = collect_condor(args.condor_cluster_id, args.condor_host)
+        report["condor"] = condor
+        if condor["available"]:
+            expected_tasks = condor["expected"] or report["tasks"]["expected"]
+            report["tasks"].update(
+                {
+                    "expected": expected_tasks,
+                    "observed": condor["materialized"],
+                    "complete": condor["completed"],
+                    "incomplete": max(0, expected_tasks - condor["completed"]),
+                    "percent_complete": (
+                        100.0 * condor["completed"] / expected_tasks
+                        if expected_tasks
+                        else 0.0
+                    ),
+                }
+            )
 
     srm_dir = (args.srm_dir or campaign_dir).resolve()
     srm_reports = {}

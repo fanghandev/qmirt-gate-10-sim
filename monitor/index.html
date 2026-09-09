@@ -746,7 +746,8 @@
           tm = p.time,
           sl = p.slurm || {},
           srm = p.srm || {},
-          mf = p.manifest || {};
+          mf = p.manifest || {},
+          condor = p.condor || {};
         let first = {};
         for (const l of p.srm_labels) {
           if (srm[l] && srm[l].available) {
@@ -754,7 +755,11 @@
             break;
           }
         }
-        const loopsDone = (ev.loops_complete || 0) + (ev.loops_in_flight || 0);
+        const extractedLoops =
+          (ev.loops_complete || 0) + (ev.loops_in_flight || 0);
+        const loopsDone = condor.available
+          ? (condor.completed || 0) * (mf.num_loops || 1)
+          : extractedLoops;
         const totalLoops = (mf.num_loops || 0) * (t.expected || 0);
         const livePct = totalLoops
           ? Math.min(100, (100 * loopsDone) / totalLoops)
@@ -798,8 +803,11 @@
               '<div class="bar"><div style="width:' +
               livePct +
               '%"></div></div>' +
-              '<div class="sub">counts in-flight loops on tasks that have not combined yet, so it moves ' +
-              "well before any task fully completes</div>") +
+              '<div class="sub">' +
+              (condor.available
+                ? "completed according to HTCondor; SRM extraction may lag"
+                : "counts in-flight loops on tasks that have not combined yet") +
+              "</div>") +
           "</section>" +
           '<section class="grid">' +
           card(
@@ -840,9 +848,11 @@
             "first submit \u2192 latest end",
           ) +
           card(
-            "Loops complete",
+            condor.available ? "SRM loops extracted" : "Loops complete",
             fmtInt(ev.loops_complete),
-            fmtInt(ev.loops_in_flight) + " in flight",
+            condor.available
+              ? "of " + fmtInt(loopsDone) + " scheduler-completed loops"
+              : fmtInt(ev.loops_in_flight) + " in flight",
           ) +
           "</section>" +
           geometryProvenancePanel(mf.geometry) +
