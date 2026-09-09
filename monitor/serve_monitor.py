@@ -31,9 +31,13 @@ class ProgressCache:
         label: str | None = None,
         ssh_host: str | None = None,
         remote_repo_root: str | None = None,
+        root: Path | None = None,
     ):
         self.fetch_command = fetch_command
         self.local_path = local_path
+        # When set, the newest batch under this root is re-resolved on every poll,
+        # so a new campaign appears without restarting the service.
+        self.root = root
         self.name = name
         self.label = label or name
         self.ssh_host = ssh_host
@@ -43,10 +47,22 @@ class ProgressCache:
         self.fetched_at = 0.0
         self.error: str | None = None
 
+    def resolve_path(self) -> Path | None:
+        if self.root is None:
+            return self.local_path
+        candidates = sorted(self.root.glob("*/progress.json"))
+        return candidates[-1] if candidates else None
+
     def refresh(self) -> None:
         try:
-            if self.local_path is not None:
-                text = self.local_path.read_text()
+            if self.fetch_command is None:
+                path = self.resolve_path()
+                if path is None:
+                    with self.lock:
+                        self.error = f"no campaign report yet under {self.root}"
+                    return
+                text = path.read_text()
+                self.local_path = path
             else:
                 completed = subprocess.run(
                     self.fetch_command,
@@ -265,6 +281,16 @@ def parse_args() -> argparse.Namespace:
             "dashboard shows a selector. Paths must be local to this machine."
         ),
     )
+    source.add_argument(
+        "--campaign-root",
+        action="append",
+        metavar="NAME=DIR",
+        help=(
+            "Like --campaign, but points at a directory holding batch_*/progress.json. "
+            "The newest batch is re-resolved on every poll, so a new campaign is picked "
+            "up without restarting. Repeatable, and can be mixed with --campaign."
+        ),
+    )
     parser.add_argument(
         "--remote-json",
         help="Path to the progress JSON on the SSH host (with --ssh-host).",
@@ -289,8 +315,10 @@ def main() -> int:
         raise SystemExit("--ssh-host requires --remote-json")
 
     caches: dict[str, ProgressCache] = {}
-    if args.campaign:
-        for entry in args.campaign:
+    if args.campaign or args.campaign_root:
+        for entry, is_root in [(item, False) for item in (args.campaign or [])] + [
+            (item, True) for item in (args.campaign_root or [])
+        ]:
             label, separator, raw_path = entry.partition("=")
             if not separator or not raw_path.strip():
                 raise SystemExit(f"--campaign expects NAME=PATH, got: {entry!r}")
@@ -301,12 +329,14 @@ def main() -> int:
             ).strip("_")
             if name in caches:
                 raise SystemExit(f"duplicate campaign name: {label}")
+            target = Path(raw_path.strip()).expanduser()
             caches[name] = ProgressCache(
                 None,
-                Path(raw_path.strip()).expanduser(),
+                None if is_root else target,
                 name=name,
                 label=label,
                 remote_repo_root=args.remote_repo_root,
+                root=target if is_root else None,
             )
     else:
         fetch_command = None
@@ -345,6 +375,8 @@ def main() -> int:
     for cache in caches.values():
         if cache.fetch_command:
             print(f"  {cache.label}: {' '.join(cache.fetch_command)}")
+        elif cache.root is not None:
+            print(f"  {cache.label}: newest batch under {cache.root}")
         else:
             print(f"  {cache.label}: local file {cache.local_path}")
     try:
