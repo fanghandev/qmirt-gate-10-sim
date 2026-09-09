@@ -10,6 +10,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$SCRIPT_DIR"
 
+# Shown in --help; the real check happens after parsing, once condor_config_val
+# can be consulted on an access point.
+MAX_JOBS_PER_SUBMISSION_HINT="$(condor_config_val -schedd MAX_JOBS_PER_SUBMISSION 2>/dev/null || echo 20000)"
+
 JOB_COUNT="1000"
 NUM_LOOPS="1"
 SOURCE_ACTIVITY_BQ="5e6"
@@ -24,6 +28,10 @@ DATA_ROOT="/ospool/ap40/data/fang.han"
 CONTAINER_IMAGE="osdf:///ospool/ap40/data/fang.han/qmirt-gate-10-sim.sif"
 USE_OSDF=1
 PAYLOAD_URL=""
+# HTCondor has no Slurm-style "array%limit"; throttling is done by materializing
+# only some of the cluster at a time.
+MAX_IDLE="2000"
+MAX_MATERIALIZE=""
 DRY_RUN=0
 
 usage() {
@@ -32,10 +40,16 @@ usage() {
     echo "          [--resolutions-mm 1,1.5,2] [--request-memory 4GB] [--request-disk 10GB]"
     echo "          [--data-root PATH] [--project-name NAME] [--container IMAGE] [--dry-run]"
     echo "          [--payload-url osdf:///...] [--no-osdf]"
+    echo "          [--max-idle N] [--max-materialize N]"
     echo ""
     echo "Each job runs --num-loops independent simulations, converts each to a sparse"
     echo "SRM, deletes the ROOT files, and returns one tarball of partial SRMs."
     echo "--fov-size-mm is a sphere diameter; the SRM grid is the cube that contains it."
+    echo ""
+    echo "--max-idle throttles how many jobs sit idle at once (HTCondor's answer to"
+    echo "Slurm's 'array%limit'); --max-materialize caps how many exist in the queue."
+    echo "This access point allows ${MAX_JOBS_PER_SUBMISSION_HINT} jobs per submission, so larger campaigns"
+    echo "must be split across several submissions."
     echo ""
     echo "By default the payload is published to OSDF and pulled through the site cache,"
     echo "so the access point does not re-send it for every job. --no-osdf falls back to"
@@ -58,6 +72,8 @@ while [[ $# -gt 0 ]]; do
         --container) CONTAINER_IMAGE="$2"; shift 2 ;;
         --payload-url) PAYLOAD_URL="$2"; USE_OSDF=1; shift 2 ;;
         --no-osdf) USE_OSDF=0; shift ;;
+        --max-idle) MAX_IDLE="$2"; shift 2 ;;
+        --max-materialize) MAX_MATERIALIZE="$2"; shift 2 ;;
         --dry-run) DRY_RUN=1; shift ;;
         --help|-h) usage; exit 0 ;;
         *) echo "Unexpected argument: $1" >&2; usage; exit 2 ;;
@@ -72,6 +88,23 @@ if ! [[ "$NUM_LOOPS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if ! [[ "$NUM_CHUNKS" =~ ^[1-9][0-9]*$ ]]; then
     echo "num_chunks must be a positive integer" >&2; exit 2
+fi
+
+# A submission over the schedd limit is rejected outright, which is a slow way to
+# find out after publishing a payload.
+SUBMISSION_LIMIT="$(condor_config_val -schedd MAX_JOBS_PER_SUBMISSION 2>/dev/null || echo '')"
+if [[ "$SUBMISSION_LIMIT" =~ ^[0-9]+$ ]] && [[ "$JOB_COUNT" -gt "$SUBMISSION_LIMIT" ]]; then
+    echo "Error: --job-count ${JOB_COUNT} exceeds this access point's MAX_JOBS_PER_SUBMISSION (${SUBMISSION_LIMIT})." >&2
+    echo "Split the campaign across several submissions, for example:" >&2
+    echo "  for i in \$(seq 1 $(( (JOB_COUNT + SUBMISSION_LIMIT - 1) / SUBMISSION_LIMIT ))); do" >&2
+    echo "      $0 --job-count ${SUBMISSION_LIMIT} ...   # same --payload-url for all of them" >&2
+    echo "  done" >&2
+    exit 2
+fi
+OWNER_LIMIT="$(condor_config_val -schedd MAX_JOBS_PER_OWNER 2>/dev/null || echo '')"
+if [[ "$OWNER_LIMIT" =~ ^[0-9]+$ ]] && [[ "$JOB_COUNT" -gt "$OWNER_LIMIT" ]]; then
+    echo "Error: --job-count ${JOB_COUNT} exceeds MAX_JOBS_PER_OWNER (${OWNER_LIMIT})." >&2
+    exit 2
 fi
 
 # Each resolution must divide the FOV evenly or the worker fails after simulating.
@@ -140,6 +173,16 @@ request_disk = ${REQUEST_DISK}
 # OSPool preemption is routine; retry rather than leaving holes in the campaign.
 max_retries = 5
 requirements = (HAS_SINGULARITY == True)
+
+# Throttle: keep the schedd and the pool from seeing the whole campaign at once.
+max_idle = ${MAX_IDLE}
+EOF
+
+if [[ -n "$MAX_MATERIALIZE" ]]; then
+    echo "max_materialize = ${MAX_MATERIALIZE}" >> "$SUB_FILE"
+fi
+
+cat >> "$SUB_FILE" <<EOF
 
 queue ${JOB_COUNT}
 EOF

@@ -90,6 +90,41 @@ The payload is published to OSDF automatically and pulled through the site cache
 so the access point does not re-send it per job. The URL and all resolved
 parameters are written to `campaign_manifest.json` in the batch directory.
 
+#### Scale limits and throttling
+
+HTCondor has **no equivalent of Slurm's `--array=0-N%limit`**. Throttling is done
+by limiting how much of the cluster is materialized:
+
+| Option | Effect |
+| :--- | :--- |
+| `--max-idle N` | at most N jobs sit idle at once (default 2000) — the closest analogue of `%limit` |
+| `--max-materialize N` | at most N jobs exist in the queue at all |
+
+The access point enforces hard limits, checked before submitting:
+
+| Schedd setting | Value on ap2140 |
+| :--- | ---: |
+| `MAX_JOBS_PER_SUBMISSION` | 20,000 |
+| `MAX_JOBS_PER_OWNER` | 50,000 |
+| `MAX_JOBS_RUNNING` | 50,000 |
+
+So a single `--job-count 80000` is refused. Split it, reusing one pinned payload
+so every job runs identical code:
+
+```bash
+URL=$(bash submit_htcondor/publish_payload_osdf.sh | tail -1)
+for i in 1 2 3 4; do
+    bash submit_htcondor/run_cardiac_sparse_srm_batch.sh \
+        --job-count 20000 --payload-url "$URL" \
+        --num-chunks <tuned> --source-activity-bq 5e6
+done
+```
+
+Each submission gets its own batch directory. Point the combine at one of them
+with `--batch`, or pass `--source-dir` per batch, since `--latest` only picks the
+newest. Staying under `MAX_JOBS_PER_OWNER` means at most two 20,000-job
+submissions in the queue at a time.
+
 Useful options:
 
 - `--no-osdf` — stage from the access point instead (2.3 MB/job), if OSDF misbehaves
