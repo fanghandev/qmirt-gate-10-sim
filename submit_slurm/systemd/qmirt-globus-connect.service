@@ -1,0 +1,15 @@
+[Unit]
+Description=Globus Connect Personal endpoint for QMIRT transfers
+Documentation=https://docs.globus.org/globus-connect-personal/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# qmirt-globus-pull cannot transfer anything unless this endpoint is connected.
+ExecStart=%h/Downloads/globusconnectpersonal-3.3.0/globusconnectpersonal -start
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

@@ -1,7 +1,7 @@
 [Unit]
 Description=Pull completed QMIRT SRM tasks from the cluster via Globus
-After=network-online.target globus-connect-personal.service
-Wants=network-online.target
+After=network-online.target qmirt-globus-connect.service
+Wants=network-online.target qmirt-globus-connect.service
 
 [Service]
 Type=oneshot
