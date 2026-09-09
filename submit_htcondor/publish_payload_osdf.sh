@@ -53,17 +53,23 @@ cp "$REPO_ROOT"/payload/python/*.py "$STAGE_DIR/payload/python/"
 cp -r "$REPO_ROOT/persistent_data/cardiac_spect" "$STAGE_DIR/persistent_data/"
 cp "$REPO_ROOT/persistent_data/GateMaterials.db" "$STAGE_DIR/persistent_data/"
 cp -r "$REPO_ROOT/qmirt/src" "$STAGE_DIR/qmirt/"
+# Editable-install and bytecode artifacts exist only on developer machines, so they
+# would make the same sources hash differently depending on where you publish from.
 find "$STAGE_DIR" -name '__pycache__' -type d -prune -exec rm -rf {} +
+find "$STAGE_DIR" -name '*.egg-info' -type d -prune -exec rm -rf {} +
+find "$STAGE_DIR" -name '*.pyc' -type f -delete
 
-# Reproducible archive: identical sources must yield an identical hash, so fixed
-# ownership/mtime and gzip -n (no embedded timestamp).
+# Hash the staged file contents, not the archive: tar and gzip differ between the
+# workstation and the access point, so archive bytes would give the same sources two
+# different names and publish duplicates.
+HASH="$(cd "$STAGE_DIR" && find . -type f -exec sha256sum {} + \
+    | LC_ALL=C sort -k2 | sha256sum | cut -c1-12)"
+NAME="qmirt-cardiac-payload-${HASH}.tar.gz"
+
 TARBALL="${STAGE_DIR}.tar.gz"
 tar --sort=name --owner=0 --group=0 --numeric-owner \
     --mtime='UTC 2020-01-01' \
     -C "$STAGE_DIR" -cf - payload persistent_data qmirt | gzip -n -9 > "$TARBALL"
-
-HASH="$(sha256sum "$TARBALL" | cut -c1-12)"
-NAME="qmirt-cardiac-payload-${HASH}.tar.gz"
 SIZE_MB="$(du -m "$TARBALL" | cut -f1)"
 
 mkdir -p "$DEST_DIR"

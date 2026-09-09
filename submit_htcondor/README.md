@@ -83,8 +83,8 @@ Defaults:
 
 | Setting | Value |
 | :--- | :--- |
-| FOV | 150 mm sphere **diameter** (grid is the ±75 mm cube) |
-| Resolutions | 1, 1.5, 2 mm → 150³, 100³, 75³ voxels |
+| FOV | 210 mm sphere **diameter** (grid is the ±105 mm cube) |
+| Resolutions | 1, 1.5, 2 mm → 210³, 140³, 105³ voxels |
 | Energy window | 20% at 140 keV (126–154 keV) |
 | Energy blurring | 10% FWHM Gaussian at 140 keV |
 | Activity | 5e6 Bq × 100 chunks × 1 s |

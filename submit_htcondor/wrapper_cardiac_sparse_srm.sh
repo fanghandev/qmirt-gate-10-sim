@@ -8,7 +8,7 @@ NUM_LOOPS="${3:-1}"
 SOURCE_ACTIVITY_BQ="${4:-5e6}"
 NUM_CHUNKS="${5:-100}"
 CHUNK_DURATION_S="${6:-1.0}"
-FOV_SIZE_MM="${7:-150.0}"
+FOV_SIZE_MM="${7:-210.0}"
 RESOLUTIONS_MM="${8:-1,1.5,2}"
 
 export PYTHONPATH="$PWD/qmirt/src${PYTHONPATH:+:$PYTHONPATH}"
@@ -74,6 +74,7 @@ for ((loop_index = 0; loop_index < NUM_LOOPS; loop_index++)); do
         --resolutions-mm "$RESOLUTIONS_MM" \
         --fov-size-mm "$FOV_SIZE_MM" \
         --pixels-per-head 625 \
+        --allow-empty \
         --output-stem "srm_${TASK_TAG}_loop_${LOOP_ID}" \
         --job-id "$CLUSTER_ID" \
         --task-id "$PROC_ID" \

@@ -57,6 +57,11 @@ def parse_args() -> argparse.Namespace:
         help="Prefix for the output files, e.g. 'srm' -> srm_1mm.npz.",
     )
     parser.add_argument(
+        "--allow-empty",
+        action="store_true",
+        help="Write empty SRMs instead of failing when a run detected no singles.",
+    )
+    parser.add_argument(
         "--photopeak-kev",
         type=float,
         default=140.0,
@@ -229,10 +234,15 @@ def main() -> int:
     resolutions_mm = list(dict.fromkeys(args.resolutions_mm))
     grid_sizes = validate_grid(args.fov_size_mm, resolutions_mm)
     root_files = sorted(args.input_dir.rglob("pixel_singles_*.root"))
-    if not root_files:
+    if not root_files and not args.allow_empty:
         raise FileNotFoundError(
             f"No pixel_singles_*.root files found in {args.input_dir}"
         )
+    if not root_files:
+        # Gate writes no ROOT file when a run detects nothing. That is a legitimate
+        # low-statistics outcome, so emit empty SRMs and let the campaign continue
+        # rather than failing the whole task.
+        print(f"Warning: no ROOT files in {args.input_dir}; writing empty SRMs")
 
     accumulators = {resolution_mm: defaultdict(int) for resolution_mm in resolutions_mm}
     branches = [

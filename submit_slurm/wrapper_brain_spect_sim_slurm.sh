@@ -160,6 +160,7 @@ build_sparse_worker_command() {
             --input-dir "$input_dir"
             --output-dir "$output_dir"
             --fov-size-mm "${SRM_FOV_SIZE_MM:-210}"
+            --allow-empty
             --job-id "$JOB_ID"
             --task-id "$TASK_ID"
             --loop-id "$CURRENT_LOOP_ID"
@@ -171,6 +172,7 @@ build_sparse_worker_command() {
             --input-dir "$input_dir"
             --output-dir "$output_dir"
             --fov-size-mm "${SRM_FOV_SIZE_MM:-210}"
+            --allow-empty
             --job-id "$JOB_ID"
             --task-id "$TASK_ID"
             --loop-id "$CURRENT_LOOP_ID"
