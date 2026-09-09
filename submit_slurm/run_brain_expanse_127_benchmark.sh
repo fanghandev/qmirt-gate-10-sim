@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Benchmark the production brain-SPECT physics at Expanse's shared-QOS CPU cap.
+# Benchmark production brain-SPECT physics on one Expanse scheduler partition.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -7,26 +7,36 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 ACCOUNT="${ACCOUNT:-mgh102}"
 PROJECT_DIR="${PROJECT_DIR:-/expanse/lustre/projects/mgh102/${USER}}"
-JOB_COUNT="${JOB_COUNT:-2}"
-TIME_LIMIT="${TIME_LIMIT:-08:00:00}"
+PARTITION="${PARTITION:-shared}"
+JOB_COUNT="${JOB_COUNT:-1}"
+TIME_LIMIT="${TIME_LIMIT:-02:00:00}"
 
 if [[ "$(hostname -s)" != login* ]]; then
     echo "Run this from an Expanse login node." >&2
     exit 1
 fi
 
-# One loop is 127 threads x 10 chunks x 1 s x 6.25e6 Bq = 7.9375e9 primaries.
+case "$PARTITION" in
+    shared) CPUS_PER_TASK=127 ;;
+    compute) CPUS_PER_TASK=128 ;;
+    *)
+        echo "PARTITION must be shared or compute for this benchmark." >&2
+        exit 1
+        ;;
+esac
+
+# One loop targets ~1.3e9 primaries, expected to take approximately 30 minutes.
 exec bash "${REPO_ROOT}/submit_slurm/run_spect_sim_slurm.sh" brain \
     --cluster expanse \
     --account "${ACCOUNT}" \
     --project-dir "${PROJECT_DIR}" \
-    --partition shared \
+    --partition "${PARTITION}" \
     --job-count "${JOB_COUNT}" \
     --concurrent-limit "${JOB_COUNT}" \
-    --cpus-per-task 127 \
+    --cpus-per-task "${CPUS_PER_TASK}" \
     --mem-gb 220 \
     --time-limit "${TIME_LIMIT}" \
-    --source-activity-bq 6.25e6 \
+    --source-activity-bq 1e6 \
     --chunk-duration-s 1 \
     --num-chunks 10 \
     --num-loops 1 \
@@ -39,4 +49,4 @@ exec bash "${REPO_ROOT}/submit_slurm/run_spect_sim_slurm.sh" brain \
     --report-partition shared \
     --report-cpus 1 \
     --report-mem-gb 2 \
-    --report-time-limit 08:00:00
+    --report-time-limit 02:00:00

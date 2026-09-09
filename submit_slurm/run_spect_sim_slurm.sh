@@ -46,6 +46,7 @@ CONCURRENT_LIMIT=""
 PROJECT_DIR=""
 # Node-local scratch template, expanded inside the generated sbatch (per array element).
 LOCAL_SCRATCH_TEMPLATE=""
+BATCH_ID="${BATCH_ID:-}"
 
 usage() {
     echo "Usage: $0 [brain|cardiac|/path/to/wrapper.sh] [job_count] [cpus_per_task] [time_limit] [mem_gb]"
@@ -393,7 +394,12 @@ EXPECTED_EVENTS_PER_LOOP_FMT="$(awk -v n="$EXPECTED_EVENTS_PER_LOOP" 'function c
 EXPECTED_EVENTS_PER_JOB_FMT="$(awk -v n="$EXPECTED_EVENTS_PER_JOB" 'function comma(x, s, r) { s = x ""; while (length(s) > 3) { r = "," substr(s, length(s)-2, 3) r; s = substr(s, 1, length(s)-3) } return s r } BEGIN { print comma(n) }')"
 EXPECTED_EVENTS_TOTAL_FMT="$(awk -v n="$EXPECTED_EVENTS_TOTAL" 'function comma(x, s, r) { s = x ""; while (length(s) > 3) { r = "," substr(s, length(s)-2, 3) r; s = substr(s, 1, length(s)-3) } return s r } BEGIN { print comma(n) }')"
 
-BATCH_ID="batch_$(date +%Y%m%d_%H%M%S)"
+if [[ -z "$BATCH_ID" ]]; then
+    BATCH_ID="batch_$(date +%Y%m%d_%H%M%S)"
+elif ! [[ "$BATCH_ID" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+    echo "batch_id may contain only letters, numbers, dots, underscores, and hyphens" >&2
+    exit 1
+fi
 LOG_DIR="${REPO_ROOT}/submit_slurm/logs/${BATCH_ID}"
 DATA_DIR="${SCRATCH_ROOT}/${OUTPUT_SUBDIR}/${BATCH_ID}"
 CONTAINER_SIF="${CONTAINER_SIF:-${REPO_ROOT}/submit_slurm/qmirt-gate-10-sim-sif_v1.0.0.sif}"
@@ -740,7 +746,9 @@ bash "${SCRIPT_DIR}/wrapper_generate_progress_report.sh" \\
     --output "${DATA_DIR}/progress.json" \\
     --interval-s ${REPORT_INTERVAL_S}
 EOF
-    REPORT_JOB_ID="$(sbatch --parsable "$REPORT_SBATCH_FILE")"
+    REPORT_JOB_ID="$(sbatch --parsable \
+        --dependency=after:"${ARRAY_JOB_ID}" \
+        "$REPORT_SBATCH_FILE")"
     echo "Submitted progress reporter job ${REPORT_JOB_ID} (${REPORT_CPUS} CPU, ${REPORT_MEM_GB}G, ${REPORT_TIME_LIMIT}, partition ${REPORT_PARTITION}; watching job ${WATCH_JOB_ID})"
     echo "Progress file: ${DATA_DIR}/progress.json"
     echo "Reporter sbatch: ${REPORT_SBATCH_FILE}"
