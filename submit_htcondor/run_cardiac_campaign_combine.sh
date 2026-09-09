@@ -182,6 +182,23 @@ combine() {
         "$@"
 }
 
+# Stragglers are normal, so the SRM is only interpretable against the primaries
+# that actually produced it. Sum them from the same job tarballs that were combined.
+SIMULATED_PRIMARIES="$(python3 - "$PARTIAL_DIR/stats" <<'PY'
+import glob, json, os, sys
+
+total = 0
+for path in glob.glob(os.path.join(sys.argv[1], "sim_stats_*.txt")):
+    try:
+        with open(path) as handle:
+            total += int(json.load(handle)["events"]["value"])
+    except (OSError, ValueError, KeyError, TypeError):
+        continue
+print(total)
+PY
+)"
+echo "Simulated primaries: ${SIMULATED_PRIMARIES}"
+
 if [[ "$SHARD_COUNT" -gt 1 ]]; then
     for ((shard = 0; shard < SHARD_COUNT; shard++)); do
         echo "Shard ${shard}/${SHARD_COUNT}..."
@@ -199,12 +216,14 @@ if [[ "$SHARD_COUNT" -gt 1 ]]; then
         --output-dir "$OUTPUT_DIR" \
         --input-glob 'group_*/final_srm_{label}.npz' \
         --expected-inputs "$SHARD_COUNT" \
+        --simulated-primaries "$SIMULATED_PRIMARIES" \
         --split-per-head
 else
     combine \
         --input-dir "$PARTIAL_DIR" \
         --output-dir "$OUTPUT_DIR" \
         --input-glob 'srm_c_*_{label}.npz' \
+        --simulated-primaries "$SIMULATED_PRIMARIES" \
         --split-per-head
 fi
 

@@ -149,6 +149,27 @@ combine_cmd=(
     --shard-index "$SHARD_INDEX"
     --shard-count "$SHARD_COUNT"
 )
+
+# A campaign is combined while tasks are still finishing, so record the primaries
+# behind these inputs; counts alone cannot be normalized.
+if [[ "$SPLIT_PER_HEAD" == "1" ]]; then
+    SIMULATED_PRIMARIES="$(python3 - "$CAMPAIGN_DIR" <<'PY'
+import glob, json, os, sys
+
+total = 0
+pattern = os.path.join(sys.argv[1], "*", "srm_chunks", "*_sim_stats_loop_*.txt")
+for path in glob.glob(pattern):
+    try:
+        with open(path) as handle:
+            total += int(json.load(handle)["events"]["value"])
+    except (OSError, ValueError, KeyError, TypeError):
+        continue
+print(total)
+PY
+)"
+    echo "Simulated primaries: ${SIMULATED_PRIMARIES}"
+    combine_cmd+=(--simulated-primaries "$SIMULATED_PRIMARIES")
+fi
 if [[ "$REQUIRE_COMPLETE" == "1" ]]; then
     combine_cmd+=(--require-complete)
 fi

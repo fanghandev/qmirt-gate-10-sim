@@ -89,6 +89,13 @@ def parse_args() -> argparse.Namespace:
         default=625,
         help="Detector pixels per head; becomes the row count of each per-head SRM.",
     )
+    parser.add_argument(
+        "--simulated-primaries",
+        type=int,
+        default=0,
+        help="Primaries behind these inputs, recorded for normalization. Campaigns "
+        "always finish with stragglers, so counts are only meaningful against it.",
+    )
     return parser.parse_args()
 
 
@@ -292,6 +299,7 @@ def main() -> int:
             "complete": not args.expected_inputs or found == args.expected_inputs,
             "nonzero_entries": int(result["counts"].size),
             "accumulated_counts": int(result["counts"].sum()),
+            "simulated_primaries": args.simulated_primaries,
             "source_files": result["source_names"],
         }
         if args.split_per_head:
