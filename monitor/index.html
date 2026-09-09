@@ -1,859 +1,1859 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<title>SRM Production Monitor</title>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
-<style>
-  :root {
-    --bg:#0b1016; --panel:#121a23; --panel-raised:#18232e; --line:#253442;
-    --line-soft:#1b2935; --text:#edf4f7; --muted:#8da0ad; --faint:#60727e;
-    --accent:#59b8ff; --good:#52d273; --warn:#e6b450; --bad:#ff6b6b;
-  }
-  * { box-sizing:border-box; }
-  body { margin:0; min-width:320px; background:var(--bg); color:var(--text);
-         font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
-  header { padding:18px clamp(16px,4vw,44px) 0; border-bottom:1px solid var(--line);
-           background:rgba(11,16,22,.94); position:sticky; top:0; z-index:10; }
-  .titlerow { display:flex; align-items:center; gap:12px; flex-wrap:wrap; max-width:1500px; margin:auto; }
-  h1 { font-size:15px; margin:0; font-weight:700; letter-spacing:.02em; }
-  h1::before { content:""; display:inline-block; width:8px; height:8px; margin:0 9px 1px 0;
-               border-radius:50%; background:var(--good); box-shadow:0 0 0 3px rgba(82,210,115,.12); }
-  .meta { color:var(--muted); font-size:11px; }
-  #campaign { color:var(--text); padding-left:12px; border-left:1px solid var(--line); }
-  nav { display:flex; gap:2px; margin:16px auto 0; max-width:1500px; flex-wrap:wrap; }
-  nav button { background:none; border:none; border-bottom:2px solid transparent;
-    color:var(--muted); padding:9px 13px 10px; font:inherit; font-size:11px; cursor:pointer; font-weight:600; }
-  nav button:hover { color:var(--text); background:rgba(89,184,255,.06); }
-  nav button.active { color:var(--accent); border-bottom-color:var(--accent); background:rgba(89,184,255,.08); }
-  main { max-width:1580px; margin:auto; padding:24px clamp(16px,4vw,44px) 64px; }
-  .tab { display:none; }
-  .tab.active { display:block; }
-  .grid { display:grid; gap:10px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); margin-bottom:16px; }
-  .charts { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(400px,1fr)); }
-  .charts + .charts { margin-top:12px; }
-  .charts.three { grid-template-columns:repeat(auto-fit,minmax(330px,1fr)); }
-  .charts.two { grid-template-columns:repeat(2,minmax(0,1fr)); }
-  @media (max-width:700px) { .charts.two { grid-template-columns:1fr; } }
-  .panel { background:rgba(18,26,35,.94); border:1px solid var(--line); border-radius:6px; padding:14px 16px;
-           box-shadow:0 8px 24px rgba(0,0,0,.12); }
-  .grid>.panel { border-top:2px solid var(--line); }
-  .grid>.panel:hover { border-top-color:var(--accent); }
-  .label { color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.08em; }
-  .value { font-size:20px; font-weight:700; margin-top:5px; font-variant-numeric:tabular-nums; }
-  .sub { color:var(--muted); font-size:11px; margin-top:3px; font-variant-numeric:tabular-nums; }
-  .bar { height:8px; background:#080d12; border:1px solid var(--line-soft); border-radius:4px; overflow:hidden; margin-top:11px; }
-  .bar>div { height:100%; background:linear-gradient(90deg,var(--accent),var(--good)); transition:width .4s; }
-  h2 { font-size:11px; margin:0 0 7px; font-weight:700; color:var(--muted);
-       text-transform:uppercase; letter-spacing:.06em; }
-  .plot { width:100%; height:330px; }
-  .plot.tall { height:360px; }
-  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
-  th,td { text-align:right; padding:5px 8px; border-bottom:1px solid var(--line); font-size:12.5px; }
-  th { color:var(--muted); font-weight:500; }
-  th:first-child, td:first-child { text-align:left; }
-  .err { background:#3d1418; border-color:#6e2b31; color:#ffb4ab; margin-bottom:14px; }
-  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
-  .toolbar { display:flex; gap:12px; align-items:center; margin-bottom:12px; color:var(--muted); font-size:11px; flex-wrap:wrap; }
-  .toolbar label { cursor:pointer; user-select:none; }
-  .toolbar select { background:var(--panel-raised); color:var(--text); border:1px solid var(--line);
-    border-radius:4px; padding:5px 7px; font:inherit; font-size:11px; max-width:320px; }
-  .btn { background:var(--panel-raised); color:var(--text); border:1px solid var(--line);
-    border-radius:4px; padding:5px 10px; font:inherit; font-size:11px; cursor:pointer; }
-  .btn:hover { border-color:var(--accent); color:var(--accent); background:rgba(89,184,255,.08); }
-  @media (max-width:700px) {
-    header { padding-top:14px; }
-    main { padding-top:16px; }
-    .charts, .charts.three { grid-template-columns:1fr; }
-    .plot.tall { height:320px; }
-    .value { font-size:18px; }
-  }
-</style>
-</head>
-<body>
-<header>
-  <div class="titlerow">
-    <h1>SRM Production Monitor</h1>
-    <select id="campaignSel" style="display:none"></select>
-    <span class="meta" id="campaign">&mdash;</span>
-    <span class="meta" id="updated">connecting&hellip;</span>
-  </div>
-  <nav id="tabs"></nav>
-</header>
-<main>
-  <div id="error"></div>
-  <div id="panels"></div>
-</main>
-
-<script>
-"use strict";
-
-const state = { data: null, active: "overview",
-                campaign: null, campaigns: [],
-                pixelSel: {}, pixelData: {}, pixelToken: 0,
-                hideZeroBin: {},
-                showGeometry: true, showRay: true,
-                colorMap: "Turbo",
-                pixelMap: { swap: true, flipU: true, flipV: true } };
-
-const campaignQuery = () =>
-  state.campaign ? "campaign=" + encodeURIComponent(state.campaign) : "";
-
-const fmtInt = n => (n == null ? "\u2014" : Math.round(n).toLocaleString());
-const fmtNum = (n, d = 2) =>
-  n == null ? "\u2014" : Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
-const fmtSci = n => {
-  if (n == null) return "\u2014";
-  const v = Number(n);
-  if (v !== 0 && (Math.abs(v) >= 1e6 || Math.abs(v) < 1e-2)) return v.toExponential(2);
-  return fmtNum(v);
-};
-function fmtDuration(seconds) {
-  if (seconds == null) return "\u2014";
-  const s = Math.max(0, Math.floor(seconds));
-  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600);
-  const m = Math.floor((s % 3600) / 60), sec = s % 60;
-  if (d) return d + "d " + h + "h " + m + "m";
-  if (h) return h + "h " + m + "m " + sec + "s";
-  if (m) return m + "m " + sec + "s";
-  return sec + "s";
-}
-const labelToMm = label => label.replace("p", ".").replace("mm", "");
-
-const DARK = {
-  paper_bgcolor: "#171d26", plot_bgcolor: "#0f1319",
-  font: { color: "#c9d4e0", size: 11 },
-  margin: { l: 64, r: 18, t: 36, b: 54 },
-};
-const CONFIG = { responsive: true, displaylogo: false,
-  modeBarButtonsToRemove: ["select2d", "lasso2d"] };
-
-function layout(title, xTitle, yTitle, extra) {
-  extra = extra || {};
-  return Object.assign({}, DARK, {
-    title: { text: title, font: { size: 12.5, color: "#e6edf3" }, x: 0, xanchor: "left" },
-    xaxis: Object.assign({ title: { text: xTitle }, gridcolor: "#263041",
-      zerolinecolor: "#263041", automargin: true }, extra.xaxis || {}),
-    yaxis: Object.assign({ title: { text: yTitle }, gridcolor: "#263041",
-      zerolinecolor: "#263041", automargin: true }, extra.yaxis || {}),
-  });
-}
-
-function draw(id, traces, lay) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  if (!window.Plotly) {
-    el.innerHTML = '<div class="sub">Plotly could not be loaded (no network?).</div>';
-    return;
-  }
-  Plotly.react(el, traces, lay, CONFIG);
-}
-
-function card(label, value, sub) {
-  return '<div class="panel"><div class="label">' + label + '</div><div class="value">' +
-         value + '</div><div class="sub">' + (sub || "") + '</div></div>';
-}
-function panel(title, id, cls) {
-  return '<div class="panel"><h2>' + title + '</h2><div id="' + id +
-         '" class="' + (cls || "plot") + '"></div></div>';
-}
-
-/* ---------- histograms ---------- */
-
-function histogramTrace(hist, color, hideZeroBin = false) {
-  if (!hist || !hist.edges || hist.edges.length < 2) return [];
-  const edges = hist.edges, values = hist.values;
-  const centers = [], widths = [], text = [];
-  for (let i = 0; i < values.length; i++) {
-    const lo = edges[i], hi = edges[i + 1];
-    if (hideZeroBin && lo <= 0 && hi > 0) continue;
-    centers.push((lo + hi) / 2);
-    widths.push(Math.max(hi - lo, 1e-9));
-    text.push("[" + fmtInt(lo) + ", " + fmtInt(hi) + ")");
-  }
-  return [{
-    type: "bar", x: centers, y: values, width: widths, text: text,
-    hovertemplate: "range %{text}<br>%{y:,} entries<extra></extra>",
-    marker: { color: color, line: { width: 0 } },
-  }];
-}
-
-function clientHistogram(values, bins) {
-  bins = bins || 20;
-  if (!values.length) return { edges: [], values: [] };
-  const max = Math.max.apply(null, values), min = Math.min.apply(null, values);
-  if (max === min) return { edges: [min, min + 1], values: [values.length] };
-  const step = (max - min) / bins, edges = [], counts = new Array(bins).fill(0);
-  for (let i = 0; i <= bins; i++) edges.push(min + i * step);
-  for (const v of values) counts[Math.min(bins - 1, Math.floor((v - min) / step))]++;
-  return { edges: edges, values: counts };
-}
-
-/* ---------- projections ---------- */
-
-function densify(projection, gridSize) {
-  const rows = new Array(gridSize);
-  for (let r = 0; r < gridSize; r++) rows[r] = new Array(gridSize).fill(0);
-  const pi = projection.i, pj = projection.j, pv = projection.v;
-  for (let k = 0; k < pv.length; k++) rows[pj[k]][pi[k]] = pv[k];
-  return rows;
-}
-
-function projectionTrace(projection, srm) {
-  const grid = srm.grid_size, lo = srm.extent_mm[0], size = srm.voxel_size_mm;
-  const z = densify(projection, grid);
-  const shown = z.map(row => row.map(v => (v > 0 ? v : null)));
-  return [{
-    type: "heatmap", z: shown, customdata: z,
-    x0: lo + size / 2, dx: size, y0: lo + size / 2, dy: size,
-    colorscale: state.colorMap, hoverongaps: false,
-    colorbar: {
-      title: { text: "counts", side: "right", font: { size: 10 } },
-      thickness: 12, outlinewidth: 0, tickfont: { size: 9 },
-    },
-    hovertemplate: "%{x:.1f} mm, %{y:.1f} mm<br>%{customdata:,} counts<extra></extra>",
-  }];
-}
-
-const PLANES = {
-  xy: { title: "XY projection \u2014 summed over z", x: "x (mm)", y: "y (mm)" },
-  yz: { title: "YZ projection \u2014 summed over x", x: "y (mm)", y: "z (mm)" },
-  zx: { title: "ZX projection \u2014 summed over y", x: "x (mm)", y: "z (mm)" },
-};
-
-/* ---------- detector geometry overlay ---------- */
-
-/* Which world axes each projection panel shows, matching PLANES. */
-const PLANE_AXES = { xy: [0, 1], yz: [1, 2], zx: [0, 2] };
-
-function geometry() {
-  const g = (state.data || {}).geometry;
-  return g && (g.heads || []).length ? g : null;
-}
-
-function geometryHead(crystalId) {
-  const g = geometry();
-  if (!g) return null;
-  return g.heads.find(h => h.crystal_id === crystalId - 1) || null;
-}
-
-function outlineTrace(heads, key, plane, color, width, opacity) {
-  const ax = PLANE_AXES[plane][0], ay = PLANE_AXES[plane][1];
-  const xs = [], ys = [];
-  for (const head of heads) {
-    const part = head[key];
-    if (!part) continue;
-    for (const edge of part.edges) {
-      const a = part.vertices[edge[0]], b = part.vertices[edge[1]];
-      xs.push(a[ax], b[ax], null);
-      ys.push(a[ay], b[ay], null);
-    }
-  }
-  if (!xs.length) return null;
-  return { type: "scatter", mode: "lines", x: xs, y: ys, opacity: opacity,
-    line: { color: color, width: width }, hoverinfo: "skip", showlegend: false };
-}
-
-function fovTrace(plane, srm) {
-  if (!srm || !srm.extent_mm || srm.extent_mm.length < 2) return null;
-  const lo = srm.extent_mm[0], hi = srm.extent_mm[1];
-  const corners = [[lo, lo], [hi, lo], [hi, hi], [lo, hi], [lo, lo]];
-  const x = corners.map(point => point[0]);
-  const y = corners.map(point => point[1]);
-  return { type: "scatter", mode: "lines", x: x, y: y,
-    line: { color: "#59d98e", width: 1.4 },
-    hovertemplate: "SRM FOV boundary<extra></extra>", showlegend: false };
-}
-
-function geometryTraces(plane, srm) {
-  const fov = fovTrace(plane, srm);
-  const g = geometry();
-  if (!g || !state.showGeometry) return fov ? [fov] : [];
-  const traces = [
-    fov,
-    outlineTrace(g.heads, "collimator", plane, "#4da3ff", 1, 0.18),
-    outlineTrace(g.heads, "crystal", plane, "#f85149", 1, 0.22),
-  ];
-  return traces.filter(Boolean);
-}
-
-function pixelCentre(head, pixel) {
-  const grid = (geometry() || {}).pixel_grid || 25;
-  let a = Math.floor(pixel / grid), b = pixel % grid;
-  if (state.pixelMap.swap) { const t = a; a = b; b = t; }
-  if (state.pixelMap.flipU) a = grid - 1 - a;
-  if (state.pixelMap.flipV) b = grid - 1 - b;
-  const o = head.pixel_origin, u = head.pixel_u, v = head.pixel_v;
-  return [0, 1, 2].map(i => o[i] + (a + 0.5) * u[i] + (b + 0.5) * v[i]);
-}
-
-function pixelIndicatorTraces(plane, head, pixel) {
-  if (!head || pixel < 0 || !head.pixel_origin) return [];
-  const ax = PLANE_AXES[plane][0], ay = PLANE_AXES[plane][1];
-  const c = pixelCentre(head, pixel);
-  const traces = [{ type: "scatter", mode: "markers", x: [c[ax]], y: [c[ay]],
-    marker: { color: "#3fb950", size: 7, symbol: "x", line: { width: 1 } }, showlegend: false,
-    hovertemplate: "pixel " + pixel + " centre<extra></extra>" }];
-  if (state.showRay && head.pinhole) {
-    const p = head.pinhole;
-    // Central ray: pixel centre through the collimator hole, extended into the FOV.
-    const far = [0, 1, 2].map(i => p[i] - 4 * (c[i] - p[i]));
-    traces.push({ type: "scatter", mode: "lines", x: [c[ax], far[ax]], y: [c[ay], far[ay]],
-      line: { color: "#3fb950", width: 0.8, dash: "dash" },
-      hoverinfo: "skip", showlegend: false });
-    traces.push({ type: "scatter", mode: "markers", x: [p[ax]], y: [p[ay]],
-      marker: { color: "#d29922", size: 5 }, showlegend: false,
-      hovertemplate: "collimator hole<extra></extra>" });
-  }
-  return traces;
-}
-
-function projectionAxes() {
-  const extra = { xaxis: {}, yaxis: { scaleanchor: "x", scaleratio: 1 } };
-  const g = geometry();
-  if (state.showGeometry && g && g.extent_mm) {
-    const r = g.extent_mm * 1.05;
-    extra.xaxis = Object.assign(extra.xaxis, { range: [-r, r] });
-    extra.yaxis = Object.assign(extra.yaxis, { range: [-r, r] });
-  }
-  return extra;
-}
-
-/* ---------- tabs ---------- */
-
-function buildOverview(p) {
-  const t = p.tasks, ev = p.events, tm = p.time, sl = p.slurm || {}, srm = p.srm || {};
-  let first = {};
-  for (const l of p.srm_labels) { if (srm[l] && srm[l].available) { first = srm[l]; break; } }
-  return '' +
-    '<section class="panel" style="margin-bottom:16px"><h2>Task completion</h2>' +
-    '<div class="value">' + fmtInt(t.complete) + " / " + fmtInt(t.expected) +
-      " tasks complete (" + fmtNum(t.percent_complete) + "%)</div>" +
-    '<div class="bar"><div style="width:' + Math.min(100, t.percent_complete || 0) + '%"></div></div>' +
-    '<div class="sub">' + fmtInt(t.incomplete) + " incomplete \u00b7 observed " + fmtInt(t.observed) +
-      (sl.available ? " \u00b7 slurm: " + fmtInt(sl.running) + " running, " + fmtInt(sl.pending) +
-        " pending, " + fmtInt(sl.failed) + " failed" : "") + "</div></section>" +
-    '<section class="grid">' +
-      card("Primaries in SRM", fmtSci(ev.committed_primaries), fmtSci(ev.in_flight_primaries) + " in flight") +
-      card("Accepted singles", fmtSci(ev.committed_accepted_singles), fmtSci(ev.committed_raw_singles) + " raw singles") +
-      card("SRM total counts", fmtSci(first.total_counts), fmtInt(first.nonzero_elements) + " non-zero elements") +
-      card("Simulation time", fmtDuration(tm.committed_simulation_seconds), "accumulated GATE time") +
-      card("Wall time (sum)", fmtDuration(tm.task_wall_seconds_sum), fmtDuration(tm.task_wall_wallclock_seconds) + " real elapsed") +
-      card("Queue wait (real)", fmtDuration(sl.wait_wallclock_seconds),
-           sl.available ? fmtDuration(sl.wait_seconds_sum) + " summed" : "sacct unavailable") +
-      card("Campaign span", fmtDuration(sl.campaign_span_seconds), "first submit \u2192 latest end") +
-      card("Loops complete", fmtInt(ev.loops_complete), fmtInt(ev.loops_in_flight) + " in flight") +
-    "</section>" +
-    '<section class="charts">' + panel("Per-task wall time", "ovWall") +
-      panel("Per-task primaries", "ovPrim") + "</section>";
-}
-
-function renderOverview(p) {
-  const tasks = p.per_task || [];
-  const ids = tasks.map(x => x.task_id);
-  draw("ovWall", [{ type: "bar", x: ids, y: tasks.map(x => x.wall_time_seconds || 0),
-      marker: { color: "#4da3ff" }, hovertemplate: "task %{x}<br>%{y:,.0f} s<extra></extra>" }],
-    layout("Wall time per task", "array task id", "wall time (s)"));
-  draw("ovPrim", [{ type: "bar", x: ids, y: tasks.map(x => x.primaries || 0),
-      marker: { color: "#3fb950" }, hovertemplate: "task %{x}<br>%{y:,} primaries<extra></extra>" }],
-    layout("Primary events per task", "array task id", "primary events"));
-}
-
-function buildSimulation(p) {
-  const r = p.rates || {}, tm = p.time, cp = p.compute_profile || {}, sl = p.slurm || {}, ev = p.events;
-  return '<section class="grid">' +
-    card("Primaries / s", fmtSci(r.primaries_per_second), "per second of GATE time") +
-    card("Tracks / s", fmtSci(r.tracks_per_second), fmtSci(r.steps_per_second) + " steps/s") +
-    card("Raw singles / s", fmtSci(r.raw_singles_per_second), fmtSci(r.accepted_singles_per_second) + " accepted/s") +
-    card("Singles / primary", fmtSci(r.singles_per_primary),
-         fmtNum(100 * (r.accepted_fraction_of_raw || 0), 3) + "% pass energy window") +
-    card("Total primaries", fmtSci(ev.committed_primaries), fmtSci(ev.committed_tracks) + " tracks") +
-    card("Simulation time", fmtDuration(tm.committed_simulation_seconds),
-         "init " + fmtDuration(tm.committed_init_seconds)) +
-    card("Sim / wall efficiency",
-         tm.simulation_fraction_of_wall == null ? "\u2014" : fmtNum(100 * tm.simulation_fraction_of_wall) + "%",
-         "GATE time \u00f7 task wall time") +
-    card("Wall time (real elapsed)", fmtDuration(tm.task_wall_wallclock_seconds),
-         fmtDuration(tm.task_wall_seconds_sum) + " summed") +
-    card("Queue wait (real elapsed)", fmtDuration(sl.wait_wallclock_seconds),
-         sl.available ? "mean " + fmtDuration(sl.wait_seconds_mean) + " \u00b7 max " + fmtDuration(sl.wait_seconds_max)
-                      : "requires --job-id") +
-    card("Mean CPU", cp.mean_cpu_pct == null ? "\u2014" : fmtNum(cp.mean_cpu_pct) + "%",
-         fmtNum(cp.mean_cpu_pct_of_allocation) + "% of " + fmtInt(cp.requested_cpus) + " CPUs") +
-    card("Peak RSS", cp.peak_rss_mb == null ? "\u2014" : fmtNum(cp.peak_rss_mb / 1024) + " GB",
-         "mean peak " + fmtNum((cp.mean_peak_rss_mb || 0) / 1024) + " GB") +
-    card("Profiled tasks", fmtInt(cp.tasks_with_profile), "tasks with resource profile") +
-    "</section>" +
-    '<section class="charts">' +
-      panel("Queue wait per task", "simWaitTask") +
-      panel("Queue wait distribution", "simWaitHist") +
-      panel("Wall time distribution", "simWallHist") +
-      panel("Per-task peak memory", "simRss") +
-      panel("Per-task CPU utilisation", "simCpu") +
-      panel("Simulation vs wall time", "simVsWall") +
-    "</section>";
-}
-
-function renderSimulation(p) {
-  const tasks = p.per_task || [], sl = p.slurm || {};
-  const ids = tasks.map(x => x.task_id);
-
-  const waits = sl.wait_seconds_per_task || {};
-  const waitKeys = Object.keys(waits).sort((a, b) => (+a) - (+b));
-  draw("simWaitTask", [{ type: "bar", x: waitKeys, y: waitKeys.map(k => waits[k]),
-      marker: { color: "#d29922" }, hovertemplate: "task %{x}<br>%{y:,.0f} s waiting<extra></extra>" }],
-    layout("Queue wait per array task", "array task id", "wait (s)"));
-
-  draw("simWaitHist", histogramTrace(clientHistogram(waitKeys.map(k => waits[k])), "#d29922"),
-    layout("Distribution of queue wait", "wait (s)", "number of tasks"));
-
-  draw("simWallHist",
-    histogramTrace(clientHistogram(tasks.map(x => x.wall_time_seconds || 0).filter(v => v > 0)), "#4da3ff"),
-    layout("Distribution of task wall time", "wall time (s)", "number of tasks"));
-
-  draw("simRss", [{ type: "bar", x: ids, y: tasks.map(x => (x.peak_rss_mb || 0) / 1024),
-      marker: { color: "#a371f7" }, hovertemplate: "task %{x}<br>%{y:.2f} GB<extra></extra>" }],
-    layout("Peak resident memory per task", "array task id", "peak RSS (GB)"));
-
-  draw("simCpu", [{ type: "bar", x: ids, y: tasks.map(x => x.mean_cpu_pct || 0),
-      marker: { color: "#3fb950" }, hovertemplate: "task %{x}<br>%{y:,.0f}% CPU<extra></extra>" }],
-    layout("Mean CPU utilisation per task", "array task id", "CPU (%) \u2014 100% = 1 core"));
-
-  draw("simVsWall", [{ type: "scatter", mode: "markers",
-      x: tasks.map(x => x.wall_time_seconds || 0), y: tasks.map(x => x.simulation_seconds || 0),
-      text: ids, marker: { color: "#4da3ff", size: 9, opacity: 0.85 },
-      hovertemplate: "task %{text}<br>wall %{x:,.0f} s<br>sim %{y:,.0f} s<extra></extra>" }],
-    layout("GATE time vs task wall time (gap = startup overhead)",
-           "task wall time (s)", "GATE simulation time (s)"));
-}
-
-function buildResolution(label, srm) {
-  if (!srm || !srm.available) {
-    return '<div class="panel"><h2>' + labelToMm(label) + ' mm</h2><div class="sub">' +
-      "Combined SRM not available yet" + (srm && srm.error ? ": " + srm.error : "") +
-      ".<br>Expected at " + (srm ? srm.path : "\u2014") + "</div></div>";
-  }
-  let truncated = false;
-  for (const k in (srm.projections || {})) if (srm.projections[k].truncated) truncated = true;
-  const hottest = (srm.hottest_elements || []).map(h =>
-    "<tr><td>" + h.crystal + " / " + h.pixel + "</td><td>" + fmtInt(h.detector_index) +
-    "</td><td>" + h.voxel_xyz.join(", ") + "</td><td>" + fmtInt(h.voxel_index) +
-    "</td><td>" + fmtInt(h.counts) + "</td></tr>").join("");
-
-  return '<section class="grid">' +
-    card("Total counts", fmtSci(srm.total_counts), fmtInt(srm.nonzero_elements) + " non-zero elements") +
-    card("Voxel size", fmtNum(srm.voxel_size_mm) + " mm",
-         srm.grid_size + "\u00b3 grid \u00b7 FOV " + fmtNum(srm.extent_mm[1] - srm.extent_mm[0]) + " mm") +
-    card("Counts per element", fmtNum(srm.mean_element_counts),
-         "median " + fmtNum(srm.median_element_counts) + " \u00b7 max " + fmtInt(srm.max_element_counts)) +
-    card("Detector pixels hit", fmtInt(srm.distinct_detector_pixels),
-         fmtInt(srm.distinct_crystals) + " crystals \u00b7 mean " + fmtNum(srm.counts_per_detector_mean) + " counts") +
-    card("Voxels hit", fmtInt(srm.distinct_voxels),
-         "mean " + fmtNum(srm.counts_per_voxel_mean) + " counts per voxel") +
-    card("Contributing chunks", fmtInt(srm.chunk_count),
-         fmtInt(srm.input_count) + " merged inputs \u00b7 " +
-         srm.energy_window_kev.map(v => fmtNum(v, 1)).join("\u2013") + " keV") +
-    "</section>" +
-    '<div class="toolbar"><span>linear colour scale</span>' +
-      '<label>colour map <select id="colorMap_' + label + '">' +
-        ["Turbo", "Viridis", "Plasma", "Inferno", "Cividis"].map(name =>
-          '<option value="' + name + '"' + (state.colorMap === name ? " selected" : "") + ">" +
-          name + "</option>").join("") + "</select></label>" +
-      (geometry() ? '<label><input type="checkbox" id="geom_' + label + '"' +
-        (state.showGeometry ? " checked" : "") + "> detector geometry (full scanner view)</label>" : "") +
-      (truncated ? '<span style="color:var(--warn)">projections truncated to strongest bins</span>' : "") +
-    "</div>" +
-    '<section class="charts three">' +
-      panel("XY projection", "proj_xy_" + label, "plot tall") +
-      panel("YZ projection", "proj_yz_" + label, "plot tall") +
-      panel("ZX projection", "proj_zx_" + label, "plot tall") +
-    "</section>" +
-    '<section class="charts" style="margin-top:14px">' +
-      panel("SRM element counts", "hist_elem_" + label) +
-      panel("Counts per detector pixel", "hist_det_" + label) +
-      panel("Counts per FOV voxel", "hist_vox_" + label) +
-    "</section>" +
-    buildDetector(label, srm) +
-    '<section class="panel" style="margin-top:14px"><h2>Hottest matrix elements</h2>' +
-    "<table><thead><tr><th>Crystal / pixel</th><th>Detector index i</th><th>Voxel x,y,z</th>" +
-    "<th>Voxel index j</th><th>Counts</th></tr></thead><tbody>" + hottest + "</tbody></table></section>";
-}
-
-/* ---------- per detector pixel ---------- */
-
-function pixelSelection(label, srm) {
-  if (!state.pixelSel[label]) {
-    const first = ((srm.detector_map || {}).crystals || [])[0];
-    state.pixelSel[label] = { crystal: first ? first.id : 0, pixel: -1 };
-  }
-  return state.pixelSel[label];
-}
-
-function crystalEntry(srm, crystalId) {
-  return ((srm.detector_map || {}).crystals || []).find(c => c.id === crystalId) || null;
-}
-
-function buildDetector(label, srm) {
-  const map = srm.detector_map || {};
-  const crystals = map.crystals || [];
-  if (!crystals.length) {
-    return '<section class="panel" style="margin-top:14px"><h2>Per detector pixel SRM</h2>' +
-      '<div class="sub">This report has no detector inventory. Regenerate the progress ' +
-      "JSON with the current report_campaign_progress.py.</div></section>";
-  }
-  const sel = pixelSelection(label, srm);
-  if (!crystalEntry(srm, sel.crystal)) sel.crystal = crystals[0].id;
-  const entry = crystalEntry(srm, sel.crystal);
-  if (sel.pixel >= 0 && entry.pixel_ids.indexOf(sel.pixel) === -1) sel.pixel = -1;
-
-  const modOpts = crystals.map(c =>
-    '<option value="' + c.id + '"' + (c.id === sel.crystal ? " selected" : "") + ">" +
-    "module " + c.id + " \u2014 " + fmtSci(c.total_counts) + " counts, " +
-    fmtInt(c.pixels_hit) + " pixels hit</option>").join("");
-  const pixOpts = ['<option value="-1"' + (sel.pixel < 0 ? " selected" : "") +
-      ">all pixels (module sum)</option>"]
-    .concat(entry.pixel_ids.map((id, k) =>
-      '<option value="' + id + '"' + (id === sel.pixel ? " selected" : "") + ">pixel " + id +
-      " \u2014 " + fmtSci(entry.pixel_counts[k]) + " counts</option>")).join("");
-
-    return '<section style="margin-top:18px"><h2>Per detector pixel SRM</h2>' +
-    '<div class="toolbar">' +
-      '<label>Detector module (head) <select id="mod_' + label + '">' + modOpts + "</select></label>" +
-      '<label>Pixel ID <select id="pix_' + label + '">' + pixOpts + "</select></label>" +
-      '<label><input type="checkbox" id="hideZeroBin_' + label + '"' +
-        (state.hideZeroBin[label] ? " checked" : "") + "> hide bin 0</label>" +
-      '<button class="btn" id="reload_' + label + '">reload</button>' +
-      '<span id="pixstatus_' + label + '"></span>' +
-    "</div>" +
-    (geometry() ? '<div class="toolbar">' +
-      '<label><input type="checkbox" id="ray_' + label + '"' +
-        (state.showRay ? " checked" : "") + "> pixel indicator and central ray</label>" +
-      '<span>pixel id mapping:</span>' +
-      '<label><input type="checkbox" id="pmswap_' + label + '"' +
-        (state.pixelMap.swap ? " checked" : "") + "> swap row/column</label>" +
-      '<label><input type="checkbox" id="pmflipu_' + label + '"' +
-        (state.pixelMap.flipU ? " checked" : "") + "> flip row</label>" +
-      '<label><input type="checkbox" id="pmflipv_' + label + '"' +
-        (state.pixelMap.flipV ? " checked" : "") + "> flip column</label>" +
-      "</div>" : "") +
-    '<section class="charts three">' +
-      panel("Selected pixel \u2014 XY", "pxy_" + label, "plot tall") +
-      panel("Selected pixel \u2014 YZ", "pyz_" + label, "plot tall") +
-      panel("Selected pixel \u2014 ZX", "pzx_" + label, "plot tall") +
-    "</section>" +
-    '<section class="charts two">' +
-      panel("Module pixel occupancy (click to select)", "pixmap_" + label, "plot tall") +
-      panel("Selected pixel \u2014 counts per voxel", "phist_" + label, "plot tall") +
-    "</section>" +
-    '<section class="panel" style="margin-top:14px"><h2>Hottest voxels for the selected pixel</h2>' +
-    '<div id="ptable_' + label + '" class="sub">no data yet</div></section></section>';
-}
-
-function drawPixelMap(label, srm) {
-  const map = srm.detector_map || {};
-  const side = map.pixel_grid || 25;
-  const sel = pixelSelection(label, srm);
-  const entry = crystalEntry(srm, sel.crystal);
-  const z = [];
-  for (let r = 0; r < side; r++) z.push(new Array(side).fill(null));
-  if (entry) {
-    for (let k = 0; k < entry.pixel_ids.length; k++) {
-      const id = entry.pixel_ids[k];
-      z[Math.floor(id / side)][id % side] = entry.pixel_counts[k];
-    }
-  }
-  const shown = z;
-  const traces = [{
-    type: "heatmap", z: shown, customdata: z, colorscale: state.colorMap, hoverongaps: false,
-    colorbar: { title: { text: "counts",
-      side: "right", font: { size: 10 } }, thickness: 12, outlinewidth: 0, tickfont: { size: 9 } },
-    hovertemplate: "pixel %{y}\u00d7" + side + "+%{x}<br>%{customdata:,} counts<extra></extra>",
-  }];
-  if (sel.pixel >= 0) {
-    traces.push({
-      type: "scatter", mode: "markers", x: [sel.pixel % side], y: [Math.floor(sel.pixel / side)],
-      marker: { symbol: "square-open", size: 16, line: { width: 2.5 }, color: "#f85149" },
-      hoverinfo: "skip", showlegend: false,
-    });
-  }
-  draw("pixmap_" + label, traces,
-    layout("Module " + sel.crystal + " \u00b7 pixel id = row\u00d7" + side + " + column",
-      "pixel column", "pixel row",
-      { yaxis: { scaleanchor: "x", scaleratio: 1 }, xaxis: { dtick: 5 } }));
-  const el = document.getElementById("pixmap_" + label);
-  if (el && el.on) {
-    el.on("plotly_click", ev => {
-      const pt = ev.points[0];
-      if (pt.data.type !== "heatmap") return;
-      selectPixel(label, srm, sel.crystal, pt.y * side + pt.x);
-    });
-  }
-}
-
-function pixelTitle(sel) {
-  return sel.pixel < 0 ? "module " + sel.crystal + " (all pixels)"
-                       : "module " + sel.crystal + " \u00b7 pixel " + sel.pixel;
-}
-
-function drawPixelSrm(label, srm, data) {
-  const sel = pixelSelection(label, srm);
-  const head = geometryHead(sel.crystal);
-  const ids = { xy: "pxy_", yz: "pyz_", zx: "pzx_" };
-  for (const plane in ids) {
-    const projection = (data && data.projections) ? data.projections[plane] : null;
-    const overlay = geometryTraces(plane, data)
-      .concat(pixelIndicatorTraces(plane, head, sel.pixel));
-    const base = projection ? projectionTrace(projection, data) : [];
-    draw(ids[plane] + label, base.concat(overlay),
-      layout(PLANES[plane].title + " \u00b7 " + pixelTitle(sel), PLANES[plane].x, PLANES[plane].y,
-        projectionAxes()));
-  }
-  draw("phist_" + label,
-    histogramTrace(data && data.voxel_total_histogram, "#d29922", state.hideZeroBin[label]),
-    layout("Counts per FOV voxel \u00b7 " + pixelTitle(sel), "counts in voxel",
-      "number of voxels", {
-        xaxis: { range: [0, null], rangemode: "tozero" },
-      }));
-
-  const host = document.getElementById("ptable_" + label);
-  if (!host) return;
-  const rows = ((data && data.hottest_voxels) || []).map(v =>
-    "<tr><td>" + v.voxel_xyz.join(", ") + "</td><td>" + fmtInt(v.voxel_index) +
-    "</td><td>" + fmtInt(v.counts) + "</td></tr>").join("");
-  host.innerHTML = rows
-    ? "<table><thead><tr><th>Voxel x,y,z</th><th>Voxel index j</th><th>Counts</th>" +
-      "</tr></thead><tbody>" + rows + "</tbody></table>"
-    : "no counts for this selection";
-}
-
-async function loadPixel(label, srm) {
-  const sel = pixelSelection(label, srm);
-  const status = document.getElementById("pixstatus_" + label);
-  const token = ++state.pixelToken;
-  if (status) status.textContent = "loading " + pixelTitle(sel) + "\u2026";
-  let data;
-  try {
-    const res = await fetch("/api/pixel?label=" + encodeURIComponent(label) +
-      "&crystal=" + sel.crystal + "&pixel=" + sel.pixel +
-      (campaignQuery() ? "&" + campaignQuery() : ""), { cache: "no-store" });
-    data = await res.json();
-  } catch (e) {
-    data = { available: false, error: String(e) };
-  }
-  if (token !== state.pixelToken) return;  // a newer selection already won
-  state.pixelData[label] = data;
-  if (status) {
-    status.innerHTML = data.available
-      ? fmtSci(data.total_counts) + " counts \u00b7 " + fmtInt(data.nonzero_elements) +
-        " non-zero elements \u00b7 " + fmtInt(data.distinct_voxels) + " voxels"
-      : '<span style="color:var(--warn)">' + (data.error || "unavailable") + "</span>";
-  }
-  drawPixelSrm(label, srm, data.available ? data : null);
-}
-
-function selectPixel(label, srm, crystal, pixel) {
-  const sel = pixelSelection(label, srm);
-  sel.crystal = crystal;
-  sel.pixel = pixel;
-  const modSel = document.getElementById("mod_" + label);
-  const pixSel = document.getElementById("pix_" + label);
-  if (modSel) modSel.value = String(crystal);
-  if (pixSel) pixSel.value = String(pixel);
-  drawPixelMap(label, srm);
-  drawProjections(label, srm);
-  loadPixel(label, srm);
-}
-
-function redrawResolution(label, srm) {
-  drawProjections(label, srm);
-  drawPixelMap(label, srm);
-  const cached = state.pixelData[label];
-  drawPixelSrm(label, srm, cached && cached.available ? cached : null);
-}
-
-function bindToggle(id, apply) {
-  const box = document.getElementById(id);
-  if (box) box.addEventListener("change", () => apply(box.checked));
-}
-
-function bindColorMap(label, srm) {
-  const select = document.getElementById("colorMap_" + label);
-  if (select) select.addEventListener("change", () => {
-    state.colorMap = select.value;
-    redrawResolution(label, srm);
-  });
-}
-
-function renderDetector(label, srm) {
-  const map = srm.detector_map || {};
-  if (!(map.crystals || []).length) return;
-  const sel = pixelSelection(label, srm);
-  const modSel = document.getElementById("mod_" + label);
-  const pixSel = document.getElementById("pix_" + label);
-  if (modSel) modSel.addEventListener("change", () => {
-    sel.crystal = Number(modSel.value);
-    sel.pixel = -1;
-    renderActive();  // the pixel list depends on the module
-  });
-  if (pixSel) pixSel.addEventListener("change", () =>
-    selectPixel(label, srm, sel.crystal, Number(pixSel.value)));
-  bindToggle("hideZeroBin_" + label, on => {
-    state.hideZeroBin[label] = on;
-    redrawResolution(label, srm);
-  });
-  const reload = document.getElementById("reload_" + label);
-  if (reload) reload.addEventListener("click", () => loadPixel(label, srm));
-  bindToggle("ray_" + label, on => { state.showRay = on; redrawResolution(label, srm); });
-  bindToggle("pmswap_" + label, on => { state.pixelMap.swap = on; redrawResolution(label, srm); });
-  bindToggle("pmflipu_" + label, on => { state.pixelMap.flipU = on; redrawResolution(label, srm); });
-  bindToggle("pmflipv_" + label, on => { state.pixelMap.flipV = on; redrawResolution(label, srm); });
-  drawPixelMap(label, srm);
-  const cached = state.pixelData[label];
-  if (cached) drawPixelSrm(label, srm, cached.available ? cached : null);
-  loadPixel(label, srm);
-}
-
-function drawProjections(label, srm) {
-  const mm = labelToMm(label);
-  const sel = state.pixelSel[label];
-    for (const plane in PLANES) {
-      draw("proj_" + plane + "_" + label,
-        projectionTrace(srm.projections[plane], srm)
-          .concat(geometryTraces(plane, srm)),
-        layout(PLANES[plane].title + " \u00b7 " + mm + " mm voxels", PLANES[plane].x, PLANES[plane].y,
-               projectionAxes()));
-  }
-}
-
-function renderResolution(label, srm) {
-  if (!srm || !srm.available) return;
-  const mm = labelToMm(label);
-    pixelSelection(label, srm);  // the aggregate projections highlight the selected head
-    bindColorMap(label, srm);
-    bindToggle("geom_" + label, on => { state.showGeometry = on; redrawResolution(label, srm); });
-    drawProjections(label, srm);
-    draw("hist_elem_" + label, histogramTrace(srm.element_count_histogram, "#4da3ff"),
-      layout("Counts per matrix element (i, j) \u00b7 " + mm + " mm",
-             "counts in matrix element", "number of elements"));
-    draw("hist_det_" + label, histogramTrace(srm.detector_total_histogram, "#a371f7"),
-      layout("Counts per detector pixel i \u00b7 " + mm + " mm",
-             "counts in detector pixel", "number of detector pixels"));
-    draw("hist_vox_" + label, histogramTrace(srm.voxel_total_histogram, "#3fb950"),
-      layout("Counts per FOV voxel j \u00b7 " + mm + " mm",
-             "counts in voxel", "number of voxels"));
-    renderDetector(label, srm);
-}
-
-/* ---------- shell ---------- */
-
-function buildShell(p) {
-  const tabs = [{ id: "overview", name: "Overview" }, { id: "simulation", name: "Simulation" }]
-    .concat(p.srm_labels.map(l => ({ id: "srm_" + l, name: labelToMm(l) + " mm SRM" })));
-  document.getElementById("tabs").innerHTML = tabs.map(t =>
-    '<button data-tab="' + t.id + '" class="' + (t.id === state.active ? "active" : "") + '">' +
-    t.name + "</button>").join("");
-  document.getElementById("panels").innerHTML = tabs.map(t =>
-    '<div class="tab ' + (t.id === state.active ? "active" : "") + '" id="tab_' + t.id + '"></div>').join("");
-  document.getElementById("tabs").querySelectorAll("button").forEach(btn => {
-    btn.addEventListener("click", () => selectTab(btn.dataset.tab));
-  });
-}
-
-function selectTab(id) {
-  state.active = id;
-  document.querySelectorAll("nav button").forEach(b =>
-    b.classList.toggle("active", b.dataset.tab === id));
-  document.querySelectorAll(".tab").forEach(d =>
-    d.classList.toggle("active", d.id === "tab_" + id));
-  renderActive();
-}
-
-function renderActive() {
-  const p = state.data;
-  if (!p) return;
-  const host = document.getElementById("tab_" + state.active);
-  if (!host) return;
-  if (state.active === "overview") {
-    host.innerHTML = buildOverview(p);
-    renderOverview(p);
-  } else if (state.active === "simulation") {
-    host.innerHTML = buildSimulation(p);
-    renderSimulation(p);
-  } else {
-    const label = state.active.slice(4);
-    const srm = (p.srm || {})[label];
-    host.innerHTML = buildResolution(label, srm);
-    renderResolution(label, srm);
-  }
-}
-
-async function loadCampaigns() {
-  try {
-    const res = await fetch("/api/campaigns", { cache: "no-store" });
-    const info = await res.json();
-    state.campaigns = info.campaigns || [];
-    state.campaign = info.default || null;
-  } catch (e) {
-    state.campaigns = [];
-    state.campaign = null;
-  }
-  const sel = document.getElementById("campaignSel");
-  if (state.campaigns.length > 1) {
-    sel.innerHTML = state.campaigns.map(c =>
-      '<option value="' + c.name + '"' +
-      (c.name === state.campaign ? " selected" : "") + ">" + c.label + "</option>").join("");
-    sel.style.display = "";
-    sel.addEventListener("change", () => {
-      state.campaign = sel.value;
-      // Selections and cached pixel rows belong to the previous campaign.
-      state.data = null;
-      state.pixelSel = {};
-      state.pixelData = {};
-      refresh();
-    });
-  } else {
-    sel.style.display = "none";
-  }
-}
-
-async function refresh() {
-  let snap;
-  try {
-    const query = campaignQuery();
-    const res = await fetch("/api/progress" + (query ? "?" + query : ""),
-      { cache: "no-store" });
-    snap = await res.json();
-  } catch (e) {
-    document.getElementById("error").innerHTML =
-      '<div class="panel err">Dashboard cannot reach its backend: ' + e + "</div>";
-    return;
-  }
-  document.getElementById("error").innerHTML = snap.error
-    ? '<div class="panel err"><b>Fetch failed</b> \u2014 showing last good data.<br>' + snap.error + "</div>"
-    : "";
-
-  const p = snap.progress;
-  if (!p || !p.tasks) {
-    document.getElementById("updated").textContent = "waiting for first poll\u2026";
-    return;
-  }
-  const rebuild = !state.data ||
-    JSON.stringify(state.data.srm_labels) !== JSON.stringify(p.srm_labels);
-  state.data = p;
-  if (rebuild) buildShell(p);
-
-  const age = snap.fetched_at ? Math.round(Date.now() / 1000 - snap.fetched_at) : null;
-  document.getElementById("campaign").textContent = p.campaign_dir || "";
-  document.getElementById("updated").innerHTML =
-    '<span class="dot" style="background:' +
-    (age != null && age < 180 ? "var(--good)" : "var(--warn)") + '"></span>updated ' +
-    (age == null ? "\u2014" : age + "s") + " ago";
-
-  renderActive();
-}
-
-loadCampaigns().then(refresh);
-setInterval(refresh, 15000);
-</script>
-</body>
+  <head>
+    <meta charset="utf-8" />
+    <title>SRM Production Monitor</title>
+    <script
+      src="https://cdn.plot.ly/plotly-2.35.2.min.js"
+      charset="utf-8"
+    ></script>
+    <style>
+      :root {
+        --bg: #0b1016;
+        --panel: #121a23;
+        --panel-raised: #18232e;
+        --line: #253442;
+        --line-soft: #1b2935;
+        --text: #edf4f7;
+        --muted: #8da0ad;
+        --faint: #60727e;
+        --accent: #59b8ff;
+        --good: #52d273;
+        --warn: #e6b450;
+        --bad: #ff6b6b;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-width: 320px;
+        background: var(--bg);
+        color: var(--text);
+        font:
+          14px/1.5 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+      }
+      header {
+        padding: 18px clamp(16px, 4vw, 44px) 0;
+        border-bottom: 1px solid var(--line);
+        background: rgba(11, 16, 22, 0.94);
+        position: sticky;
+        top: 0;
+        z-index: 10;
+      }
+      .titlerow {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        max-width: 1500px;
+        margin: auto;
+      }
+      h1 {
+        font-size: 15px;
+        margin: 0;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+      h1::before {
+        content: "";
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        margin: 0 9px 1px 0;
+        border-radius: 50%;
+        background: var(--good);
+        box-shadow: 0 0 0 3px rgba(82, 210, 115, 0.12);
+      }
+      .meta {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      #campaign {
+        color: var(--text);
+        padding-left: 12px;
+        border-left: 1px solid var(--line);
+      }
+      nav {
+        display: flex;
+        gap: 2px;
+        margin: 16px auto 0;
+        max-width: 1500px;
+        flex-wrap: wrap;
+      }
+      nav button {
+        background: none;
+        border: none;
+        border-bottom: 2px solid transparent;
+        color: var(--muted);
+        padding: 9px 13px 10px;
+        font: inherit;
+        font-size: 11px;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      nav button:hover {
+        color: var(--text);
+        background: rgba(89, 184, 255, 0.06);
+      }
+      nav button.active {
+        color: var(--accent);
+        border-bottom-color: var(--accent);
+        background: rgba(89, 184, 255, 0.08);
+      }
+      main {
+        max-width: 1580px;
+        margin: auto;
+        padding: 24px clamp(16px, 4vw, 44px) 64px;
+      }
+      .tab {
+        display: none;
+      }
+      .tab.active {
+        display: block;
+      }
+      .grid {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        margin-bottom: 16px;
+      }
+      .charts {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+      }
+      .charts + .charts {
+        margin-top: 12px;
+      }
+      .charts.three {
+        grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+      }
+      .charts.two {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      @media (max-width: 700px) {
+        .charts.two {
+          grid-template-columns: 1fr;
+        }
+      }
+      .panel {
+        background: rgba(18, 26, 35, 0.94);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 14px 16px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+      }
+      .grid > .panel {
+        border-top: 2px solid var(--line);
+      }
+      .grid > .panel:hover {
+        border-top-color: var(--accent);
+      }
+      .label {
+        color: var(--muted);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .value {
+        font-size: 20px;
+        font-weight: 700;
+        margin-top: 5px;
+        font-variant-numeric: tabular-nums;
+      }
+      .sub {
+        color: var(--muted);
+        font-size: 11px;
+        margin-top: 3px;
+        font-variant-numeric: tabular-nums;
+      }
+      .bar {
+        height: 8px;
+        background: #080d12;
+        border: 1px solid var(--line-soft);
+        border-radius: 4px;
+        overflow: hidden;
+        margin-top: 11px;
+      }
+      .bar > div {
+        height: 100%;
+        background: linear-gradient(90deg, var(--accent), var(--good));
+        transition: width 0.4s;
+      }
+      h2 {
+        font-size: 11px;
+        margin: 0 0 7px;
+        font-weight: 700;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .plot {
+        width: 100%;
+        height: 330px;
+      }
+      .plot.tall {
+        height: 360px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-variant-numeric: tabular-nums;
+      }
+      th,
+      td {
+        text-align: right;
+        padding: 5px 8px;
+        border-bottom: 1px solid var(--line);
+        font-size: 12.5px;
+      }
+      th {
+        color: var(--muted);
+        font-weight: 500;
+      }
+      th:first-child,
+      td:first-child {
+        text-align: left;
+      }
+      .err {
+        background: #3d1418;
+        border-color: #6e2b31;
+        color: #ffb4ab;
+        margin-bottom: 14px;
+      }
+      .dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-right: 6px;
+      }
+      .toolbar {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 12px;
+        color: var(--muted);
+        font-size: 11px;
+        flex-wrap: wrap;
+      }
+      .toolbar label {
+        cursor: pointer;
+        user-select: none;
+      }
+      .toolbar select {
+        background: var(--panel-raised);
+        color: var(--text);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 5px 7px;
+        font: inherit;
+        font-size: 11px;
+        max-width: 320px;
+      }
+      .btn {
+        background: var(--panel-raised);
+        color: var(--text);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 5px 10px;
+        font: inherit;
+        font-size: 11px;
+        cursor: pointer;
+      }
+      .btn:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+        background: rgba(89, 184, 255, 0.08);
+      }
+      @media (max-width: 700px) {
+        header {
+          padding-top: 14px;
+        }
+        main {
+          padding-top: 16px;
+        }
+        .charts,
+        .charts.three {
+          grid-template-columns: 1fr;
+        }
+        .plot.tall {
+          height: 320px;
+        }
+        .value {
+          font-size: 18px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="titlerow">
+        <h1>SRM Production Monitor</h1>
+        <select id="campaignSel" style="display: none"></select>
+        <span class="meta" id="campaign">&mdash;</span>
+        <span class="meta" id="updated">connecting&hellip;</span>
+      </div>
+      <nav id="tabs"></nav>
+    </header>
+    <main>
+      <div id="error"></div>
+      <div id="panels"></div>
+    </main>
+
+    <script>
+      "use strict";
+
+      const state = {
+        data: null,
+        active: "overview",
+        campaign: null,
+        campaigns: [],
+        pixelSel: {},
+        pixelData: {},
+        pixelToken: 0,
+        hideZeroBin: {},
+        showGeometry: true,
+        showRay: true,
+        colorMap: "Turbo",
+        pixelMap: { swap: true, flipU: true, flipV: true },
+      };
+
+      const campaignQuery = () =>
+        state.campaign ? "campaign=" + encodeURIComponent(state.campaign) : "";
+
+      const fmtInt = (n) =>
+        n == null ? "\u2014" : Math.round(n).toLocaleString();
+      const fmtNum = (n, d = 2) =>
+        n == null
+          ? "\u2014"
+          : Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
+      const fmtSci = (n) => {
+        if (n == null) return "\u2014";
+        const v = Number(n);
+        if (v !== 0 && (Math.abs(v) >= 1e6 || Math.abs(v) < 1e-2))
+          return v.toExponential(2);
+        return fmtNum(v);
+      };
+      function fmtDuration(seconds) {
+        if (seconds == null) return "\u2014";
+        const s = Math.max(0, Math.floor(seconds));
+        const d = Math.floor(s / 86400),
+          h = Math.floor((s % 86400) / 3600);
+        const m = Math.floor((s % 3600) / 60),
+          sec = s % 60;
+        if (d) return d + "d " + h + "h " + m + "m";
+        if (h) return h + "h " + m + "m " + sec + "s";
+        if (m) return m + "m " + sec + "s";
+        return sec + "s";
+      }
+      const labelToMm = (label) => label.replace("p", ".").replace("mm", "");
+
+      const DARK = {
+        paper_bgcolor: "#171d26",
+        plot_bgcolor: "#0f1319",
+        font: { color: "#c9d4e0", size: 11 },
+        margin: { l: 64, r: 18, t: 36, b: 54 },
+      };
+      const CONFIG = {
+        responsive: true,
+        displaylogo: false,
+        modeBarButtonsToRemove: ["select2d", "lasso2d"],
+      };
+
+      function layout(title, xTitle, yTitle, extra) {
+        extra = extra || {};
+        return Object.assign({}, DARK, {
+          title: {
+            text: title,
+            font: { size: 12.5, color: "#e6edf3" },
+            x: 0,
+            xanchor: "left",
+          },
+          xaxis: Object.assign(
+            {
+              title: { text: xTitle },
+              gridcolor: "#263041",
+              zerolinecolor: "#263041",
+              automargin: true,
+            },
+            extra.xaxis || {},
+          ),
+          yaxis: Object.assign(
+            {
+              title: { text: yTitle },
+              gridcolor: "#263041",
+              zerolinecolor: "#263041",
+              automargin: true,
+            },
+            extra.yaxis || {},
+          ),
+        });
+      }
+
+      function draw(id, traces, lay) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (!window.Plotly) {
+          el.innerHTML =
+            '<div class="sub">Plotly could not be loaded (no network?).</div>';
+          return;
+        }
+        Plotly.react(el, traces, lay, CONFIG);
+      }
+
+      function card(label, value, sub) {
+        return (
+          '<div class="panel"><div class="label">' +
+          label +
+          '</div><div class="value">' +
+          value +
+          '</div><div class="sub">' +
+          (sub || "") +
+          "</div></div>"
+        );
+      }
+      function panel(title, id, cls) {
+        return (
+          '<div class="panel"><h2>' +
+          title +
+          '</h2><div id="' +
+          id +
+          '" class="' +
+          (cls || "plot") +
+          '"></div></div>'
+        );
+      }
+
+      /* ---------- histograms ---------- */
+
+      function histogramTrace(hist, color, hideZeroBin = false) {
+        if (!hist || !hist.edges || hist.edges.length < 2) return [];
+        const edges = hist.edges,
+          values = hist.values;
+        const centers = [],
+          widths = [],
+          text = [];
+        for (let i = 0; i < values.length; i++) {
+          const lo = edges[i],
+            hi = edges[i + 1];
+          if (hideZeroBin && lo <= 0 && hi > 0) continue;
+          centers.push((lo + hi) / 2);
+          widths.push(Math.max(hi - lo, 1e-9));
+          text.push("[" + fmtInt(lo) + ", " + fmtInt(hi) + ")");
+        }
+        return [
+          {
+            type: "bar",
+            x: centers,
+            y: values,
+            width: widths,
+            text: text,
+            hovertemplate: "range %{text}<br>%{y:,} entries<extra></extra>",
+            marker: { color: color, line: { width: 0 } },
+          },
+        ];
+      }
+
+      function clientHistogram(values, bins) {
+        bins = bins || 20;
+        if (!values.length) return { edges: [], values: [] };
+        const max = Math.max.apply(null, values),
+          min = Math.min.apply(null, values);
+        if (max === min)
+          return { edges: [min, min + 1], values: [values.length] };
+        const step = (max - min) / bins,
+          edges = [],
+          counts = new Array(bins).fill(0);
+        for (let i = 0; i <= bins; i++) edges.push(min + i * step);
+        for (const v of values)
+          counts[Math.min(bins - 1, Math.floor((v - min) / step))]++;
+        return { edges: edges, values: counts };
+      }
+
+      /* ---------- projections ---------- */
+
+      function densify(projection, gridSize) {
+        const rows = new Array(gridSize);
+        for (let r = 0; r < gridSize; r++)
+          rows[r] = new Array(gridSize).fill(0);
+        const pi = projection.i,
+          pj = projection.j,
+          pv = projection.v;
+        for (let k = 0; k < pv.length; k++) rows[pj[k]][pi[k]] = pv[k];
+        return rows;
+      }
+
+      function projectionTrace(projection, srm) {
+        const grid = srm.grid_size,
+          lo = srm.extent_mm[0],
+          size = srm.voxel_size_mm;
+        const z = densify(projection, grid);
+        const shown = z.map((row) => row.map((v) => (v > 0 ? v : null)));
+        return [
+          {
+            type: "heatmap",
+            z: shown,
+            customdata: z,
+            x0: lo + size / 2,
+            dx: size,
+            y0: lo + size / 2,
+            dy: size,
+            colorscale: state.colorMap,
+            hoverongaps: false,
+            colorbar: {
+              title: { text: "counts", side: "right", font: { size: 10 } },
+              thickness: 12,
+              outlinewidth: 0,
+              tickfont: { size: 9 },
+            },
+            hovertemplate:
+              "%{x:.1f} mm, %{y:.1f} mm<br>%{customdata:,} counts<extra></extra>",
+          },
+        ];
+      }
+
+      const PLANES = {
+        xy: {
+          title: "XY projection \u2014 summed over z",
+          x: "x (mm)",
+          y: "y (mm)",
+        },
+        yz: {
+          title: "YZ projection \u2014 summed over x",
+          x: "y (mm)",
+          y: "z (mm)",
+        },
+        zx: {
+          title: "ZX projection \u2014 summed over y",
+          x: "x (mm)",
+          y: "z (mm)",
+        },
+      };
+
+      /* ---------- detector geometry overlay ---------- */
+
+      /* Which world axes each projection panel shows, matching PLANES. */
+      const PLANE_AXES = { xy: [0, 1], yz: [1, 2], zx: [0, 2] };
+
+      function geometry() {
+        const g = (state.data || {}).geometry;
+        return g && (g.heads || []).length ? g : null;
+      }
+
+      function geometryHead(crystalId) {
+        const g = geometry();
+        if (!g) return null;
+        return g.heads.find((h) => h.crystal_id === crystalId - 1) || null;
+      }
+
+      function outlineTrace(heads, key, plane, color, width, opacity) {
+        const ax = PLANE_AXES[plane][0],
+          ay = PLANE_AXES[plane][1];
+        const xs = [],
+          ys = [];
+        for (const head of heads) {
+          const part = head[key];
+          if (!part) continue;
+          for (const edge of part.edges) {
+            const a = part.vertices[edge[0]],
+              b = part.vertices[edge[1]];
+            xs.push(a[ax], b[ax], null);
+            ys.push(a[ay], b[ay], null);
+          }
+        }
+        if (!xs.length) return null;
+        return {
+          type: "scatter",
+          mode: "lines",
+          x: xs,
+          y: ys,
+          opacity: opacity,
+          line: { color: color, width: width },
+          hoverinfo: "skip",
+          showlegend: false,
+        };
+      }
+
+      function fovTrace(plane, srm) {
+        if (!srm || !srm.extent_mm || srm.extent_mm.length < 2) return null;
+        const lo = srm.extent_mm[0],
+          hi = srm.extent_mm[1];
+        const corners = [
+          [lo, lo],
+          [hi, lo],
+          [hi, hi],
+          [lo, hi],
+          [lo, lo],
+        ];
+        const x = corners.map((point) => point[0]);
+        const y = corners.map((point) => point[1]);
+        return {
+          type: "scatter",
+          mode: "lines",
+          x: x,
+          y: y,
+          line: { color: "#59d98e", width: 1.4 },
+          hovertemplate: "SRM FOV boundary<extra></extra>",
+          showlegend: false,
+        };
+      }
+
+      function geometryTraces(plane, srm) {
+        const fov = fovTrace(plane, srm);
+        const g = geometry();
+        if (!g || !state.showGeometry) return fov ? [fov] : [];
+        const traces = [
+          fov,
+          outlineTrace(g.heads, "collimator", plane, "#4da3ff", 1, 0.18),
+          outlineTrace(g.heads, "crystal", plane, "#f85149", 1, 0.22),
+        ];
+        return traces.filter(Boolean);
+      }
+
+      function pixelCentre(head, pixel) {
+        const grid = (geometry() || {}).pixel_grid || 25;
+        let a = Math.floor(pixel / grid),
+          b = pixel % grid;
+        if (state.pixelMap.swap) {
+          const t = a;
+          a = b;
+          b = t;
+        }
+        if (state.pixelMap.flipU) a = grid - 1 - a;
+        if (state.pixelMap.flipV) b = grid - 1 - b;
+        const o = head.pixel_origin,
+          u = head.pixel_u,
+          v = head.pixel_v;
+        return [0, 1, 2].map((i) => o[i] + (a + 0.5) * u[i] + (b + 0.5) * v[i]);
+      }
+
+      function pixelIndicatorTraces(plane, head, pixel) {
+        if (!head || pixel < 0 || !head.pixel_origin) return [];
+        const ax = PLANE_AXES[plane][0],
+          ay = PLANE_AXES[plane][1];
+        const c = pixelCentre(head, pixel);
+        const traces = [
+          {
+            type: "scatter",
+            mode: "markers",
+            x: [c[ax]],
+            y: [c[ay]],
+            marker: {
+              color: "#3fb950",
+              size: 7,
+              symbol: "x",
+              line: { width: 1 },
+            },
+            showlegend: false,
+            hovertemplate: "pixel " + pixel + " centre<extra></extra>",
+          },
+        ];
+        if (state.showRay && head.pinhole) {
+          const p = head.pinhole;
+          // Central ray: pixel centre through the collimator hole, extended into the FOV.
+          const far = [0, 1, 2].map((i) => p[i] - 4 * (c[i] - p[i]));
+          traces.push({
+            type: "scatter",
+            mode: "lines",
+            x: [c[ax], far[ax]],
+            y: [c[ay], far[ay]],
+            line: { color: "#3fb950", width: 0.8, dash: "dash" },
+            hoverinfo: "skip",
+            showlegend: false,
+          });
+          traces.push({
+            type: "scatter",
+            mode: "markers",
+            x: [p[ax]],
+            y: [p[ay]],
+            marker: { color: "#d29922", size: 5 },
+            showlegend: false,
+            hovertemplate: "collimator hole<extra></extra>",
+          });
+        }
+        return traces;
+      }
+
+      function projectionAxes() {
+        const extra = { xaxis: {}, yaxis: { scaleanchor: "x", scaleratio: 1 } };
+        const g = geometry();
+        if (state.showGeometry && g && g.extent_mm) {
+          const r = g.extent_mm * 1.05;
+          extra.xaxis = Object.assign(extra.xaxis, { range: [-r, r] });
+          extra.yaxis = Object.assign(extra.yaxis, { range: [-r, r] });
+        }
+        return extra;
+      }
+
+      /* ---------- tabs ---------- */
+
+      function buildOverview(p) {
+        const t = p.tasks,
+          ev = p.events,
+          tm = p.time,
+          sl = p.slurm || {},
+          srm = p.srm || {},
+          mf = p.manifest || {};
+        let first = {};
+        for (const l of p.srm_labels) {
+          if (srm[l] && srm[l].available) {
+            first = srm[l];
+            break;
+          }
+        }
+        const loopsDone = (ev.loops_complete || 0) + (ev.loops_in_flight || 0);
+        const totalLoops = (mf.num_loops || 0) * (t.expected || 0);
+        const livePct = totalLoops
+          ? Math.min(100, (100 * loopsDone) / totalLoops)
+          : null;
+        return (
+          "" +
+          '<section class="panel" style="margin-bottom:16px"><h2>Task completion</h2>' +
+          '<div class="value">' +
+          fmtInt(t.complete) +
+          " / " +
+          fmtInt(t.expected) +
+          " tasks complete (" +
+          fmtNum(t.percent_complete) +
+          "%)</div>" +
+          '<div class="bar"><div style="width:' +
+          Math.min(100, t.percent_complete || 0) +
+          '%"></div></div>' +
+          '<div class="sub">' +
+          fmtInt(t.incomplete) +
+          " incomplete \u00b7 observed " +
+          fmtInt(t.observed) +
+          (sl.available
+            ? " \u00b7 slurm: " +
+              fmtInt(sl.running) +
+              " running, " +
+              fmtInt(sl.pending) +
+              " pending, " +
+              fmtInt(sl.failed) +
+              " failed"
+            : "") +
+          "</div>" +
+          (livePct == null
+            ? ""
+            : '<div class="value" style="margin-top:12px">' +
+              fmtNum(livePct) +
+              "% loop progress (" +
+              fmtInt(loopsDone) +
+              " / " +
+              fmtInt(totalLoops) +
+              " loops)</div>" +
+              '<div class="bar"><div style="width:' +
+              livePct +
+              '%"></div></div>' +
+              '<div class="sub">counts in-flight loops on tasks that have not combined yet, so it moves ' +
+              "well before any task fully completes</div>") +
+          "</section>" +
+          '<section class="grid">' +
+          card(
+            "Primaries in SRM",
+            fmtSci(ev.committed_primaries),
+            fmtSci(ev.in_flight_primaries) + " in flight",
+          ) +
+          card(
+            "Accepted singles",
+            fmtSci(ev.committed_accepted_singles),
+            fmtSci(ev.committed_raw_singles) + " raw singles",
+          ) +
+          card(
+            "SRM total counts",
+            fmtSci(first.total_counts),
+            fmtInt(first.nonzero_elements) + " non-zero elements",
+          ) +
+          card(
+            "Simulation time",
+            fmtDuration(tm.committed_simulation_seconds),
+            "accumulated GATE time",
+          ) +
+          card(
+            "Wall time (sum)",
+            fmtDuration(tm.task_wall_seconds_sum),
+            fmtDuration(tm.task_wall_wallclock_seconds) + " real elapsed",
+          ) +
+          card(
+            "Queue wait (real)",
+            fmtDuration(sl.wait_wallclock_seconds),
+            sl.available
+              ? fmtDuration(sl.wait_seconds_sum) + " summed"
+              : "sacct unavailable",
+          ) +
+          card(
+            "Campaign span",
+            fmtDuration(sl.campaign_span_seconds),
+            "first submit \u2192 latest end",
+          ) +
+          card(
+            "Loops complete",
+            fmtInt(ev.loops_complete),
+            fmtInt(ev.loops_in_flight) + " in flight",
+          ) +
+          "</section>" +
+          '<section class="charts">' +
+          panel("Per-task wall time", "ovWall") +
+          panel("Per-task primaries", "ovPrim") +
+          "</section>"
+        );
+      }
+
+      function renderOverview(p) {
+        const tasks = p.per_task || [];
+        const ids = tasks.map((x) => x.task_id);
+        // wall_time_seconds is only written once a task's final combine finishes,
+        // so incomplete tasks would otherwise show as empty bars for hours. Fall
+        // back to the live, GATE-reported simulation_seconds (excludes queue wait
+        // and init) so the chart keeps moving while a task is still running.
+        const wallY = tasks.map((x) =>
+          x.wall_time_seconds != null
+            ? x.wall_time_seconds
+            : x.simulation_seconds || 0,
+        );
+        const wallLabel = tasks.map((x) =>
+          x.wall_time_seconds != null
+            ? "final wall time"
+            : "sim time so far (running)",
+        );
+        const wallColor = tasks.map((x) =>
+          x.wall_time_seconds != null ? "#4da3ff" : "#d29922",
+        );
+        draw(
+          "ovWall",
+          [
+            {
+              type: "bar",
+              x: ids,
+              y: wallY,
+              marker: { color: wallColor },
+              customdata: wallLabel,
+              hovertemplate:
+                "task %{x}<br>%{y:,.0f} s (%{customdata})<extra></extra>",
+            },
+          ],
+          layout("Wall time per task", "array task id", "wall time (s)"),
+        );
+        draw(
+          "ovPrim",
+          [
+            {
+              type: "bar",
+              x: ids,
+              y: tasks.map((x) => x.primaries || 0),
+              marker: { color: "#3fb950" },
+              hovertemplate: "task %{x}<br>%{y:,} primaries<extra></extra>",
+            },
+          ],
+          layout("Primary events per task", "array task id", "primary events"),
+        );
+      }
+
+      function liveRates(tasks) {
+        // report_campaign_progress.py's rates are committed-only (completed
+        // tasks), so they stay null for hours on long-running campaigns.
+        // per_task carries live counters for running tasks too, so sum across
+        // all tasks here for a cumulative-average throughput that updates
+        // every poll instead of waiting for the first task to finish.
+        const totalSimS = tasks.reduce(
+          (s, x) => s + (x.simulation_seconds || 0),
+          0,
+        );
+        const totalPrimaries = tasks.reduce(
+          (s, x) => s + (x.primaries || 0),
+          0,
+        );
+        const totalTracks = tasks.reduce((s, x) => s + (x.tracks || 0), 0);
+        const totalSteps = tasks.reduce((s, x) => s + (x.steps || 0), 0);
+        const totalRaw = tasks.reduce((s, x) => s + (x.raw_singles || 0), 0);
+        const totalAccepted = tasks.reduce(
+          (s, x) => s + (x.accepted_singles || 0),
+          0,
+        );
+        const rate = (n) => (totalSimS > 0 ? n / totalSimS : null);
+        return {
+          primariesPerSecond: rate(totalPrimaries),
+          tracksPerSecond: rate(totalTracks),
+          stepsPerSecond: rate(totalSteps),
+          rawSinglesPerSecond: rate(totalRaw),
+          acceptedSinglesPerSecond: rate(totalAccepted),
+          acceptedFractionOfRaw: totalRaw ? totalAccepted / totalRaw : null,
+          singlesPerPrimary: totalPrimaries ? totalRaw / totalPrimaries : null,
+        };
+      }
+
+      function buildSimulation(p) {
+        const r = p.rates || {},
+          tm = p.time,
+          cp = p.compute_profile || {},
+          sl = p.slurm || {},
+          ev = p.events,
+          lr = liveRates(p.per_task || []);
+        return (
+          '<section class="grid">' +
+          card(
+            "Primaries / s (live)",
+            fmtSci(lr.primariesPerSecond),
+            "committed-only: " + fmtSci(r.primaries_per_second),
+          ) +
+          card(
+            "Tracks / s (live)",
+            fmtSci(lr.tracksPerSecond),
+            fmtSci(lr.stepsPerSecond) + " steps/s",
+          ) +
+          card(
+            "Raw singles / s (live)",
+            fmtSci(lr.rawSinglesPerSecond),
+            fmtSci(lr.acceptedSinglesPerSecond) + " accepted/s",
+          ) +
+          card(
+            "Singles / primary (live)",
+            fmtSci(lr.singlesPerPrimary),
+            fmtNum(100 * (lr.acceptedFractionOfRaw || 0), 3) +
+              "% pass energy window",
+          ) +
+          card(
+            "Total primaries",
+            fmtSci(ev.committed_primaries),
+            fmtSci(ev.committed_tracks) + " tracks",
+          ) +
+          card(
+            "Simulation time",
+            fmtDuration(tm.committed_simulation_seconds),
+            fmtDuration(tm.in_flight_simulation_seconds) +
+              " in flight \u00b7 init " +
+              fmtDuration(tm.committed_init_seconds),
+          ) +
+          card(
+            "Sim / wall efficiency",
+            tm.simulation_fraction_of_wall == null
+              ? "\u2014"
+              : fmtNum(100 * tm.simulation_fraction_of_wall) + "%",
+            "GATE time \u00f7 task wall time",
+          ) +
+          card(
+            "Wall time (real elapsed)",
+            fmtDuration(tm.task_wall_wallclock_seconds),
+            fmtDuration(tm.task_wall_seconds_sum) + " summed",
+          ) +
+          card(
+            "Queue wait (real elapsed)",
+            fmtDuration(sl.wait_wallclock_seconds),
+            sl.available
+              ? "mean " +
+                  fmtDuration(sl.wait_seconds_mean) +
+                  " \u00b7 max " +
+                  fmtDuration(sl.wait_seconds_max)
+              : "requires --job-id",
+          ) +
+          card(
+            "Mean CPU",
+            cp.mean_cpu_pct == null ? "\u2014" : fmtNum(cp.mean_cpu_pct) + "%",
+            fmtNum(cp.mean_cpu_pct_of_allocation) +
+              "% of " +
+              fmtInt(cp.requested_cpus) +
+              " CPUs",
+          ) +
+          card(
+            "Peak RSS",
+            cp.peak_rss_mb == null
+              ? "\u2014"
+              : fmtNum(cp.peak_rss_mb / 1024) + " GB",
+            "mean peak " + fmtNum((cp.mean_peak_rss_mb || 0) / 1024) + " GB",
+          ) +
+          card(
+            "Profiled tasks",
+            fmtInt(cp.tasks_with_profile),
+            "tasks with resource profile",
+          ) +
+          "</section>" +
+          '<section class="charts">' +
+          panel("Queue wait per task", "simWaitTask") +
+          panel("Queue wait distribution", "simWaitHist") +
+          panel("Wall time distribution", "simWallHist") +
+          panel("Per-task peak memory", "simRss") +
+          panel("Per-task CPU utilisation", "simCpu") +
+          panel("Simulation vs wall time", "simVsWall") +
+          "</section>"
+        );
+      }
+
+      function renderSimulation(p) {
+        const tasks = p.per_task || [],
+          sl = p.slurm || {};
+        const ids = tasks.map((x) => x.task_id);
+
+        const waits = sl.wait_seconds_per_task || {};
+        const waitKeys = Object.keys(waits).sort((a, b) => +a - +b);
+        draw(
+          "simWaitTask",
+          [
+            {
+              type: "bar",
+              x: waitKeys,
+              y: waitKeys.map((k) => waits[k]),
+              marker: { color: "#d29922" },
+              hovertemplate: "task %{x}<br>%{y:,.0f} s waiting<extra></extra>",
+            },
+          ],
+          layout("Queue wait per array task", "array task id", "wait (s)"),
+        );
+
+        draw(
+          "simWaitHist",
+          histogramTrace(
+            clientHistogram(waitKeys.map((k) => waits[k])),
+            "#d29922",
+          ),
+          layout("Distribution of queue wait", "wait (s)", "number of tasks"),
+        );
+
+        draw(
+          "simWallHist",
+          histogramTrace(
+            clientHistogram(
+              // Incomplete tasks have no wall_time_seconds yet; fall back to
+              // their live simulation_seconds so the histogram fills in before
+              // any task finishes, instead of staying empty for hours.
+              tasks
+                .map((x) =>
+                  x.wall_time_seconds != null
+                    ? x.wall_time_seconds
+                    : x.simulation_seconds || 0,
+                )
+                .filter((v) => v > 0),
+            ),
+            "#4da3ff",
+          ),
+          layout(
+            "Distribution of task wall time (running tasks use sim time so far)",
+            "wall time (s)",
+            "number of tasks",
+          ),
+        );
+
+        draw(
+          "simRss",
+          [
+            {
+              type: "bar",
+              x: ids,
+              y: tasks.map((x) => (x.peak_rss_mb || 0) / 1024),
+              marker: { color: "#a371f7" },
+              hovertemplate: "task %{x}<br>%{y:.2f} GB<extra></extra>",
+            },
+          ],
+          layout(
+            "Peak resident memory per task",
+            "array task id",
+            "peak RSS (GB)",
+          ),
+        );
+
+        draw(
+          "simCpu",
+          [
+            {
+              type: "bar",
+              x: ids,
+              y: tasks.map((x) => x.mean_cpu_pct || 0),
+              marker: { color: "#3fb950" },
+              hovertemplate: "task %{x}<br>%{y:,.0f}% CPU<extra></extra>",
+            },
+          ],
+          layout(
+            "Mean CPU utilisation per task",
+            "array task id",
+            "CPU (%) \u2014 100% = 1 core",
+          ),
+        );
+
+        // The wall-vs-sim gap only means something once a task has a real final
+        // wall_time_seconds; including still-running tasks would stack them all
+        // at x=0 and make the plot look broken.
+        const finished = tasks.filter((x) => x.wall_time_seconds != null);
+        draw(
+          "simVsWall",
+          [
+            {
+              type: "scatter",
+              mode: "markers",
+              x: finished.map((x) => x.wall_time_seconds || 0),
+              y: finished.map((x) => x.simulation_seconds || 0),
+              text: finished.map((x) => x.task_id),
+              marker: { color: "#4da3ff", size: 9, opacity: 0.85 },
+              hovertemplate:
+                "task %{text}<br>wall %{x:,.0f} s<br>sim %{y:,.0f} s<extra></extra>",
+            },
+          ],
+          layout(
+            "GATE time vs task wall time (gap = startup overhead) \u2014 " +
+              finished.length +
+              " of " +
+              tasks.length +
+              " tasks finished",
+            "task wall time (s)",
+            "GATE simulation time (s)",
+          ),
+        );
+      }
+
+      function buildResolution(label, srm) {
+        if (!srm || !srm.available) {
+          return (
+            '<div class="panel"><h2>' +
+            labelToMm(label) +
+            ' mm</h2><div class="sub">' +
+            "Combined SRM not available yet" +
+            (srm && srm.error ? ": " + srm.error : "") +
+            ".<br>Expected at " +
+            (srm ? srm.path : "\u2014") +
+            "</div></div>"
+          );
+        }
+        let truncated = false;
+        for (const k in srm.projections || {})
+          if (srm.projections[k].truncated) truncated = true;
+        const hottest = (srm.hottest_elements || [])
+          .map(
+            (h) =>
+              "<tr><td>" +
+              h.crystal +
+              " / " +
+              h.pixel +
+              "</td><td>" +
+              fmtInt(h.detector_index) +
+              "</td><td>" +
+              h.voxel_xyz.join(", ") +
+              "</td><td>" +
+              fmtInt(h.voxel_index) +
+              "</td><td>" +
+              fmtInt(h.counts) +
+              "</td></tr>",
+          )
+          .join("");
+
+        return (
+          '<section class="grid">' +
+          card(
+            "Total counts",
+            fmtSci(srm.total_counts),
+            fmtInt(srm.nonzero_elements) + " non-zero elements",
+          ) +
+          card(
+            "Voxel size",
+            fmtNum(srm.voxel_size_mm) + " mm",
+            srm.grid_size +
+              "\u00b3 grid \u00b7 FOV " +
+              fmtNum(srm.extent_mm[1] - srm.extent_mm[0]) +
+              " mm",
+          ) +
+          card(
+            "Counts per element",
+            fmtNum(srm.mean_element_counts),
+            "median " +
+              fmtNum(srm.median_element_counts) +
+              " \u00b7 max " +
+              fmtInt(srm.max_element_counts),
+          ) +
+          card(
+            "Detector pixels hit",
+            fmtInt(srm.distinct_detector_pixels),
+            fmtInt(srm.distinct_crystals) +
+              " crystals \u00b7 mean " +
+              fmtNum(srm.counts_per_detector_mean) +
+              " counts",
+          ) +
+          card(
+            "Voxels hit",
+            fmtInt(srm.distinct_voxels),
+            "mean " + fmtNum(srm.counts_per_voxel_mean) + " counts per voxel",
+          ) +
+          card(
+            "Contributing chunks",
+            fmtInt(srm.chunk_count),
+            fmtInt(srm.input_count) +
+              " merged inputs \u00b7 " +
+              srm.energy_window_kev.map((v) => fmtNum(v, 1)).join("\u2013") +
+              " keV",
+          ) +
+          "</section>" +
+          '<div class="toolbar"><span>linear colour scale</span>' +
+          '<label>colour map <select id="colorMap_' +
+          label +
+          '">' +
+          ["Turbo", "Viridis", "Plasma", "Inferno", "Cividis"]
+            .map(
+              (name) =>
+                '<option value="' +
+                name +
+                '"' +
+                (state.colorMap === name ? " selected" : "") +
+                ">" +
+                name +
+                "</option>",
+            )
+            .join("") +
+          "</select></label>" +
+          (geometry()
+            ? '<label><input type="checkbox" id="geom_' +
+              label +
+              '"' +
+              (state.showGeometry ? " checked" : "") +
+              "> detector geometry (full scanner view)</label>"
+            : "") +
+          (truncated
+            ? '<span style="color:var(--warn)">projections truncated to strongest bins</span>'
+            : "") +
+          "</div>" +
+          '<section class="charts three">' +
+          panel("XY projection", "proj_xy_" + label, "plot tall") +
+          panel("YZ projection", "proj_yz_" + label, "plot tall") +
+          panel("ZX projection", "proj_zx_" + label, "plot tall") +
+          "</section>" +
+          '<section class="charts" style="margin-top:14px">' +
+          panel("SRM element counts", "hist_elem_" + label) +
+          panel("Counts per detector pixel", "hist_det_" + label) +
+          panel("Counts per FOV voxel", "hist_vox_" + label) +
+          "</section>" +
+          buildDetector(label, srm) +
+          '<section class="panel" style="margin-top:14px"><h2>Hottest matrix elements</h2>' +
+          "<table><thead><tr><th>Crystal / pixel</th><th>Detector index i</th><th>Voxel x,y,z</th>" +
+          "<th>Voxel index j</th><th>Counts</th></tr></thead><tbody>" +
+          hottest +
+          "</tbody></table></section>"
+        );
+      }
+
+      /* ---------- per detector pixel ---------- */
+
+      function pixelSelection(label, srm) {
+        if (!state.pixelSel[label]) {
+          const first = ((srm.detector_map || {}).crystals || [])[0];
+          state.pixelSel[label] = { crystal: first ? first.id : 0, pixel: -1 };
+        }
+        return state.pixelSel[label];
+      }
+
+      function crystalEntry(srm, crystalId) {
+        return (
+          ((srm.detector_map || {}).crystals || []).find(
+            (c) => c.id === crystalId,
+          ) || null
+        );
+      }
+
+      function buildDetector(label, srm) {
+        const map = srm.detector_map || {};
+        const crystals = map.crystals || [];
+        if (!crystals.length) {
+          return (
+            '<section class="panel" style="margin-top:14px"><h2>Per detector pixel SRM</h2>' +
+            '<div class="sub">This report has no detector inventory. Regenerate the progress ' +
+            "JSON with the current report_campaign_progress.py.</div></section>"
+          );
+        }
+        const sel = pixelSelection(label, srm);
+        if (!crystalEntry(srm, sel.crystal)) sel.crystal = crystals[0].id;
+        const entry = crystalEntry(srm, sel.crystal);
+        if (sel.pixel >= 0 && entry.pixel_ids.indexOf(sel.pixel) === -1)
+          sel.pixel = -1;
+
+        const modOpts = crystals
+          .map(
+            (c) =>
+              '<option value="' +
+              c.id +
+              '"' +
+              (c.id === sel.crystal ? " selected" : "") +
+              ">" +
+              "module " +
+              c.id +
+              " \u2014 " +
+              fmtSci(c.total_counts) +
+              " counts, " +
+              fmtInt(c.pixels_hit) +
+              " pixels hit</option>",
+          )
+          .join("");
+        const pixOpts = [
+          '<option value="-1"' +
+            (sel.pixel < 0 ? " selected" : "") +
+            ">all pixels (module sum)</option>",
+        ]
+          .concat(
+            entry.pixel_ids.map(
+              (id, k) =>
+                '<option value="' +
+                id +
+                '"' +
+                (id === sel.pixel ? " selected" : "") +
+                ">pixel " +
+                id +
+                " \u2014 " +
+                fmtSci(entry.pixel_counts[k]) +
+                " counts</option>",
+            ),
+          )
+          .join("");
+
+        return (
+          '<section style="margin-top:18px"><h2>Per detector pixel SRM</h2>' +
+          '<div class="toolbar">' +
+          '<label>Detector module (head) <select id="mod_' +
+          label +
+          '">' +
+          modOpts +
+          "</select></label>" +
+          '<label>Pixel ID <select id="pix_' +
+          label +
+          '">' +
+          pixOpts +
+          "</select></label>" +
+          '<label><input type="checkbox" id="hideZeroBin_' +
+          label +
+          '"' +
+          (state.hideZeroBin[label] ? " checked" : "") +
+          "> hide bin 0</label>" +
+          '<button class="btn" id="reload_' +
+          label +
+          '">reload</button>' +
+          '<span id="pixstatus_' +
+          label +
+          '"></span>' +
+          "</div>" +
+          (geometry()
+            ? '<div class="toolbar">' +
+              '<label><input type="checkbox" id="ray_' +
+              label +
+              '"' +
+              (state.showRay ? " checked" : "") +
+              "> pixel indicator and central ray</label>" +
+              "<span>pixel id mapping:</span>" +
+              '<label><input type="checkbox" id="pmswap_' +
+              label +
+              '"' +
+              (state.pixelMap.swap ? " checked" : "") +
+              "> swap row/column</label>" +
+              '<label><input type="checkbox" id="pmflipu_' +
+              label +
+              '"' +
+              (state.pixelMap.flipU ? " checked" : "") +
+              "> flip row</label>" +
+              '<label><input type="checkbox" id="pmflipv_' +
+              label +
+              '"' +
+              (state.pixelMap.flipV ? " checked" : "") +
+              "> flip column</label>" +
+              "</div>"
+            : "") +
+          '<section class="charts three">' +
+          panel("Selected pixel \u2014 XY", "pxy_" + label, "plot tall") +
+          panel("Selected pixel \u2014 YZ", "pyz_" + label, "plot tall") +
+          panel("Selected pixel \u2014 ZX", "pzx_" + label, "plot tall") +
+          "</section>" +
+          '<section class="charts two">' +
+          panel(
+            "Module pixel occupancy (click to select)",
+            "pixmap_" + label,
+            "plot tall",
+          ) +
+          panel(
+            "Selected pixel \u2014 counts per voxel",
+            "phist_" + label,
+            "plot tall",
+          ) +
+          "</section>" +
+          '<section class="panel" style="margin-top:14px"><h2>Hottest voxels for the selected pixel</h2>' +
+          '<div id="ptable_' +
+          label +
+          '" class="sub">no data yet</div></section></section>'
+        );
+      }
+
+      function drawPixelMap(label, srm) {
+        const map = srm.detector_map || {};
+        const side = map.pixel_grid || 25;
+        const sel = pixelSelection(label, srm);
+        const entry = crystalEntry(srm, sel.crystal);
+        const z = [];
+        for (let r = 0; r < side; r++) z.push(new Array(side).fill(null));
+        if (entry) {
+          for (let k = 0; k < entry.pixel_ids.length; k++) {
+            const id = entry.pixel_ids[k];
+            z[Math.floor(id / side)][id % side] = entry.pixel_counts[k];
+          }
+        }
+        const shown = z;
+        const traces = [
+          {
+            type: "heatmap",
+            z: shown,
+            customdata: z,
+            colorscale: state.colorMap,
+            hoverongaps: false,
+            colorbar: {
+              title: { text: "counts", side: "right", font: { size: 10 } },
+              thickness: 12,
+              outlinewidth: 0,
+              tickfont: { size: 9 },
+            },
+            hovertemplate:
+              "pixel %{y}\u00d7" +
+              side +
+              "+%{x}<br>%{customdata:,} counts<extra></extra>",
+          },
+        ];
+        if (sel.pixel >= 0) {
+          traces.push({
+            type: "scatter",
+            mode: "markers",
+            x: [sel.pixel % side],
+            y: [Math.floor(sel.pixel / side)],
+            marker: {
+              symbol: "square-open",
+              size: 16,
+              line: { width: 2.5 },
+              color: "#f85149",
+            },
+            hoverinfo: "skip",
+            showlegend: false,
+          });
+        }
+        draw(
+          "pixmap_" + label,
+          traces,
+          layout(
+            "Module " +
+              sel.crystal +
+              " \u00b7 pixel id = row\u00d7" +
+              side +
+              " + column",
+            "pixel column",
+            "pixel row",
+            { yaxis: { scaleanchor: "x", scaleratio: 1 }, xaxis: { dtick: 5 } },
+          ),
+        );
+        const el = document.getElementById("pixmap_" + label);
+        if (el && el.on) {
+          el.on("plotly_click", (ev) => {
+            const pt = ev.points[0];
+            if (pt.data.type !== "heatmap") return;
+            selectPixel(label, srm, sel.crystal, pt.y * side + pt.x);
+          });
+        }
+      }
+
+      function pixelTitle(sel) {
+        return sel.pixel < 0
+          ? "module " + sel.crystal + " (all pixels)"
+          : "module " + sel.crystal + " \u00b7 pixel " + sel.pixel;
+      }
+
+      function drawPixelSrm(label, srm, data) {
+        const sel = pixelSelection(label, srm);
+        const head = geometryHead(sel.crystal);
+        const ids = { xy: "pxy_", yz: "pyz_", zx: "pzx_" };
+        for (const plane in ids) {
+          const projection =
+            data && data.projections ? data.projections[plane] : null;
+          const overlay = geometryTraces(plane, data).concat(
+            pixelIndicatorTraces(plane, head, sel.pixel),
+          );
+          const base = projection ? projectionTrace(projection, data) : [];
+          draw(
+            ids[plane] + label,
+            base.concat(overlay),
+            layout(
+              PLANES[plane].title + " \u00b7 " + pixelTitle(sel),
+              PLANES[plane].x,
+              PLANES[plane].y,
+              projectionAxes(),
+            ),
+          );
+        }
+        draw(
+          "phist_" + label,
+          histogramTrace(
+            data && data.voxel_total_histogram,
+            "#d29922",
+            state.hideZeroBin[label],
+          ),
+          layout(
+            "Counts per FOV voxel \u00b7 " + pixelTitle(sel),
+            "counts in voxel",
+            "number of voxels",
+            {
+              xaxis: { range: [0, null], rangemode: "tozero" },
+            },
+          ),
+        );
+
+        const host = document.getElementById("ptable_" + label);
+        if (!host) return;
+        const rows = ((data && data.hottest_voxels) || [])
+          .map(
+            (v) =>
+              "<tr><td>" +
+              v.voxel_xyz.join(", ") +
+              "</td><td>" +
+              fmtInt(v.voxel_index) +
+              "</td><td>" +
+              fmtInt(v.counts) +
+              "</td></tr>",
+          )
+          .join("");
+        host.innerHTML = rows
+          ? "<table><thead><tr><th>Voxel x,y,z</th><th>Voxel index j</th><th>Counts</th>" +
+            "</tr></thead><tbody>" +
+            rows +
+            "</tbody></table>"
+          : "no counts for this selection";
+      }
+
+      async function loadPixel(label, srm) {
+        const sel = pixelSelection(label, srm);
+        const status = document.getElementById("pixstatus_" + label);
+        const token = ++state.pixelToken;
+        if (status)
+          status.textContent = "loading " + pixelTitle(sel) + "\u2026";
+        let data;
+        try {
+          const res = await fetch(
+            "/api/pixel?label=" +
+              encodeURIComponent(label) +
+              "&crystal=" +
+              sel.crystal +
+              "&pixel=" +
+              sel.pixel +
+              (campaignQuery() ? "&" + campaignQuery() : ""),
+            { cache: "no-store" },
+          );
+          data = await res.json();
+        } catch (e) {
+          data = { available: false, error: String(e) };
+        }
+        if (token !== state.pixelToken) return; // a newer selection already won
+        state.pixelData[label] = data;
+        if (status) {
+          status.innerHTML = data.available
+            ? fmtSci(data.total_counts) +
+              " counts \u00b7 " +
+              fmtInt(data.nonzero_elements) +
+              " non-zero elements \u00b7 " +
+              fmtInt(data.distinct_voxels) +
+              " voxels"
+            : '<span style="color:var(--warn)">' +
+              (data.error || "unavailable") +
+              "</span>";
+        }
+        drawPixelSrm(label, srm, data.available ? data : null);
+      }
+
+      function selectPixel(label, srm, crystal, pixel) {
+        const sel = pixelSelection(label, srm);
+        sel.crystal = crystal;
+        sel.pixel = pixel;
+        const modSel = document.getElementById("mod_" + label);
+        const pixSel = document.getElementById("pix_" + label);
+        if (modSel) modSel.value = String(crystal);
+        if (pixSel) pixSel.value = String(pixel);
+        drawPixelMap(label, srm);
+        drawProjections(label, srm);
+        loadPixel(label, srm);
+      }
+
+      function redrawResolution(label, srm) {
+        drawProjections(label, srm);
+        drawPixelMap(label, srm);
+        const cached = state.pixelData[label];
+        drawPixelSrm(label, srm, cached && cached.available ? cached : null);
+      }
+
+      function bindToggle(id, apply) {
+        const box = document.getElementById(id);
+        if (box) box.addEventListener("change", () => apply(box.checked));
+      }
+
+      function bindColorMap(label, srm) {
+        const select = document.getElementById("colorMap_" + label);
+        if (select)
+          select.addEventListener("change", () => {
+            state.colorMap = select.value;
+            redrawResolution(label, srm);
+          });
+      }
+
+      function renderDetector(label, srm) {
+        const map = srm.detector_map || {};
+        if (!(map.crystals || []).length) return;
+        const sel = pixelSelection(label, srm);
+        const modSel = document.getElementById("mod_" + label);
+        const pixSel = document.getElementById("pix_" + label);
+        if (modSel)
+          modSel.addEventListener("change", () => {
+            sel.crystal = Number(modSel.value);
+            sel.pixel = -1;
+            renderActive(); // the pixel list depends on the module
+          });
+        if (pixSel)
+          pixSel.addEventListener("change", () =>
+            selectPixel(label, srm, sel.crystal, Number(pixSel.value)),
+          );
+        bindToggle("hideZeroBin_" + label, (on) => {
+          state.hideZeroBin[label] = on;
+          redrawResolution(label, srm);
+        });
+        const reload = document.getElementById("reload_" + label);
+        if (reload)
+          reload.addEventListener("click", () => loadPixel(label, srm));
+        bindToggle("ray_" + label, (on) => {
+          state.showRay = on;
+          redrawResolution(label, srm);
+        });
+        bindToggle("pmswap_" + label, (on) => {
+          state.pixelMap.swap = on;
+          redrawResolution(label, srm);
+        });
+        bindToggle("pmflipu_" + label, (on) => {
+          state.pixelMap.flipU = on;
+          redrawResolution(label, srm);
+        });
+        bindToggle("pmflipv_" + label, (on) => {
+          state.pixelMap.flipV = on;
+          redrawResolution(label, srm);
+        });
+        drawPixelMap(label, srm);
+        const cached = state.pixelData[label];
+        if (cached) drawPixelSrm(label, srm, cached.available ? cached : null);
+        loadPixel(label, srm);
+      }
+
+      function drawProjections(label, srm) {
+        const mm = labelToMm(label);
+        const sel = state.pixelSel[label];
+        for (const plane in PLANES) {
+          draw(
+            "proj_" + plane + "_" + label,
+            projectionTrace(srm.projections[plane], srm).concat(
+              geometryTraces(plane, srm),
+            ),
+            layout(
+              PLANES[plane].title + " \u00b7 " + mm + " mm voxels",
+              PLANES[plane].x,
+              PLANES[plane].y,
+              projectionAxes(),
+            ),
+          );
+        }
+      }
+
+      function renderResolution(label, srm) {
+        if (!srm || !srm.available) return;
+        const mm = labelToMm(label);
+        pixelSelection(label, srm); // the aggregate projections highlight the selected head
+        bindColorMap(label, srm);
+        bindToggle("geom_" + label, (on) => {
+          state.showGeometry = on;
+          redrawResolution(label, srm);
+        });
+        drawProjections(label, srm);
+        draw(
+          "hist_elem_" + label,
+          histogramTrace(srm.element_count_histogram, "#4da3ff"),
+          layout(
+            "Counts per matrix element (i, j) \u00b7 " + mm + " mm",
+            "counts in matrix element",
+            "number of elements",
+          ),
+        );
+        draw(
+          "hist_det_" + label,
+          histogramTrace(srm.detector_total_histogram, "#a371f7"),
+          layout(
+            "Counts per detector pixel i \u00b7 " + mm + " mm",
+            "counts in detector pixel",
+            "number of detector pixels",
+          ),
+        );
+        draw(
+          "hist_vox_" + label,
+          histogramTrace(srm.voxel_total_histogram, "#3fb950"),
+          layout(
+            "Counts per FOV voxel j \u00b7 " + mm + " mm",
+            "counts in voxel",
+            "number of voxels",
+          ),
+        );
+        renderDetector(label, srm);
+      }
+
+      /* ---------- shell ---------- */
+
+      function buildShell(p) {
+        const tabs = [
+          { id: "overview", name: "Overview" },
+          { id: "simulation", name: "Simulation" },
+        ].concat(
+          p.srm_labels.map((l) => ({
+            id: "srm_" + l,
+            name: labelToMm(l) + " mm SRM",
+          })),
+        );
+        document.getElementById("tabs").innerHTML = tabs
+          .map(
+            (t) =>
+              '<button data-tab="' +
+              t.id +
+              '" class="' +
+              (t.id === state.active ? "active" : "") +
+              '">' +
+              t.name +
+              "</button>",
+          )
+          .join("");
+        document.getElementById("panels").innerHTML = tabs
+          .map(
+            (t) =>
+              '<div class="tab ' +
+              (t.id === state.active ? "active" : "") +
+              '" id="tab_' +
+              t.id +
+              '"></div>',
+          )
+          .join("");
+        document
+          .getElementById("tabs")
+          .querySelectorAll("button")
+          .forEach((btn) => {
+            btn.addEventListener("click", () => selectTab(btn.dataset.tab));
+          });
+      }
+
+      function selectTab(id) {
+        state.active = id;
+        document
+          .querySelectorAll("nav button")
+          .forEach((b) => b.classList.toggle("active", b.dataset.tab === id));
+        document
+          .querySelectorAll(".tab")
+          .forEach((d) => d.classList.toggle("active", d.id === "tab_" + id));
+        renderActive();
+      }
+
+      function renderActive() {
+        const p = state.data;
+        if (!p) return;
+        const host = document.getElementById("tab_" + state.active);
+        if (!host) return;
+        if (state.active === "overview") {
+          host.innerHTML = buildOverview(p);
+          renderOverview(p);
+        } else if (state.active === "simulation") {
+          host.innerHTML = buildSimulation(p);
+          renderSimulation(p);
+        } else {
+          const label = state.active.slice(4);
+          const srm = (p.srm || {})[label];
+          host.innerHTML = buildResolution(label, srm);
+          renderResolution(label, srm);
+        }
+      }
+
+      async function loadCampaigns() {
+        try {
+          const res = await fetch("/api/campaigns", { cache: "no-store" });
+          const info = await res.json();
+          state.campaigns = info.campaigns || [];
+          state.campaign = info.default || null;
+        } catch (e) {
+          state.campaigns = [];
+          state.campaign = null;
+        }
+        const sel = document.getElementById("campaignSel");
+        if (state.campaigns.length > 1) {
+          sel.innerHTML = state.campaigns
+            .map(
+              (c) =>
+                '<option value="' +
+                c.name +
+                '"' +
+                (c.name === state.campaign ? " selected" : "") +
+                ">" +
+                c.label +
+                "</option>",
+            )
+            .join("");
+          sel.style.display = "";
+          sel.addEventListener("change", () => {
+            state.campaign = sel.value;
+            // Selections and cached pixel rows belong to the previous campaign.
+            state.data = null;
+            state.pixelSel = {};
+            state.pixelData = {};
+            refresh();
+          });
+        } else {
+          sel.style.display = "none";
+        }
+      }
+
+      async function refresh() {
+        let snap;
+        try {
+          const query = campaignQuery();
+          const res = await fetch(
+            "/api/progress" + (query ? "?" + query : ""),
+            { cache: "no-store" },
+          );
+          snap = await res.json();
+        } catch (e) {
+          document.getElementById("error").innerHTML =
+            '<div class="panel err">Dashboard cannot reach its backend: ' +
+            e +
+            "</div>";
+          return;
+        }
+        document.getElementById("error").innerHTML = snap.error
+          ? '<div class="panel err"><b>Fetch failed</b> \u2014 showing last good data.<br>' +
+            snap.error +
+            "</div>"
+          : "";
+
+        const p = snap.progress;
+        if (!p || !p.tasks) {
+          document.getElementById("updated").textContent =
+            "waiting for first poll\u2026";
+          return;
+        }
+        const rebuild =
+          !state.data ||
+          JSON.stringify(state.data.srm_labels) !==
+            JSON.stringify(p.srm_labels);
+        state.data = p;
+        if (rebuild) buildShell(p);
+
+        const age = snap.fetched_at
+          ? Math.round(Date.now() / 1000 - snap.fetched_at)
+          : null;
+        document.getElementById("campaign").textContent = p.campaign_dir || "";
+        document.getElementById("updated").innerHTML =
+          '<span class="dot" style="background:' +
+          (age != null && age < 180 ? "var(--good)" : "var(--warn)") +
+          '"></span>updated ' +
+          (age == null ? "\u2014" : age + "s") +
+          " ago";
+
+        renderActive();
+      }
+
+      loadCampaigns().then(refresh);
+      setInterval(refresh, 15000);
+    </script>
+  </body>
 </html>

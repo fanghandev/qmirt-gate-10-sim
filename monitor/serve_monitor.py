@@ -53,6 +53,22 @@ class ProgressCache:
         candidates = sorted(self.root.glob("*/progress.json"))
         return candidates[-1] if candidates else None
 
+    def _read_manifest(self) -> dict:
+        # campaign_manifest.json sits next to progress.json; num_loops isn't in
+        # the report itself, so pull it here to compute a loop-level live
+        # progress percentage that doesn't wait for whole tasks to finish.
+        if self.local_path is None:
+            return {}
+        manifest_path = self.local_path.parent / "campaign_manifest.json"
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except Exception:  # noqa: BLE001 - manifest is optional context
+            return {}
+        return {
+            "num_loops": manifest.get("num_loops"),
+            "job_count": manifest.get("job_count"),
+        }
+
     def refresh(self) -> None:
         try:
             if self.fetch_command is None:
@@ -73,6 +89,7 @@ class ProgressCache:
                 )
                 text = completed.stdout
             data = json.loads(text)
+            data["manifest"] = self._read_manifest()
         except Exception as exc:  # noqa: BLE001 - surfaced to the dashboard
             with self.lock:
                 self.error = f"{type(exc).__name__}: {exc}"
