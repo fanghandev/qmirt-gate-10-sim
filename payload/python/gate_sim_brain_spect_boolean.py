@@ -598,6 +598,12 @@ def configure_chunked_run_timing(sim: gate.Simulation, args):
         f"Expected primaries total all chunks all threads: {expected_events_total:.3e}"
     )
 
+    if expected_events_per_chunk >= args.eventid_hard_limit:
+        raise ValueError(
+            "Expected events per timing chunk exceed the 32-bit EventID limit: "
+            f"{expected_events_per_chunk:.3e} >= {args.eventid_hard_limit:.3e}. "
+            "Reduce source activity, chunk_duration_s, or num_threads."
+        )
     if expected_events_per_chunk >= args.eventid_warn_threshold:
         print(
             "WARNING: Expected events per chunk is high relative to 32-bit EventID range. "
@@ -732,6 +738,12 @@ def parse_arguments():
         type=int,
         default=1.5e9,
         help="Threshold for expected events per chunk to warn about EventID overflow.",
+    )
+    parser.add_argument(
+        "--eventid-hard-limit",
+        type=int,
+        default=2_147_483_647,
+        help="Maximum expected events per timing chunk for the signed 32-bit EventID range.",
     )
     parser.add_argument(
         "--mapping-mode",

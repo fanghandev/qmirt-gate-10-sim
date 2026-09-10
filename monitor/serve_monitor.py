@@ -42,6 +42,8 @@ class ProgressCache:
         self.label = label or name
         self.ssh_host = ssh_host
         self.remote_repo_root = remote_repo_root
+        self.group_id: str | None = None
+        self.group_paths: list[Path] = []
         self.lock = threading.Lock()
         self.payload: dict = {"status": "starting"}
         self.fetched_at = 0.0
@@ -53,13 +55,42 @@ class ProgressCache:
         candidates = sorted(self.root.glob("*/progress.json"))
         return candidates[-1] if candidates else None
 
-    def _read_manifest(self) -> dict:
+    def resolve_group(self) -> list[Path]:
+        if self.root is None:
+            return [self.local_path] if self.local_path is not None else []
+        manifests = sorted(self.root.glob("*/campaign_manifest.json"))
+        if not manifests:
+            path = self.resolve_path()
+            return [path] if path is not None else []
+        latest_manifest = manifests[-1]
+        try:
+            latest = json.loads(latest_manifest.read_text())
+        except (OSError, json.JSONDecodeError):
+            return [latest_manifest.parent / "progress.json"]
+        group_id = latest.get("campaign_group_id")
+        if not group_id:
+            return [latest_manifest.parent / "progress.json"]
+        paths = []
+        for manifest_path in manifests:
+            try:
+                manifest = json.loads(manifest_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if manifest.get("campaign_group_id") == group_id:
+                progress_path = manifest_path.parent / "progress.json"
+                if progress_path.is_file():
+                    paths.append(progress_path)
+        self.group_id = group_id
+        return sorted(paths)
+
+    def _read_manifest(self, path: Path | None = None) -> dict:
         # campaign_manifest.json sits next to progress.json; num_loops isn't in
         # the report itself, so pull it here to compute a loop-level live
         # progress percentage that doesn't wait for whole tasks to finish.
-        if self.local_path is None:
+        path = path or self.local_path
+        if path is None:
             return {}
-        manifest_path = self.local_path.parent / "campaign_manifest.json"
+        manifest_path = path.parent / "campaign_manifest.json"
         try:
             manifest = json.loads(manifest_path.read_text())
         except Exception:  # noqa: BLE001 - manifest is optional context
@@ -77,14 +108,127 @@ class ProgressCache:
                 pass
         return result
 
+    @staticmethod
+    def _sum_fields(reports: list[dict], section: str, fields: list[str]) -> dict:
+        return {
+            field: sum((report.get(section, {}).get(field) or 0) for report in reports)
+            for field in fields
+        }
+
+    def _aggregate_group(self, paths: list[Path]) -> dict:
+        reports = []
+        parts = []
+        for path in paths:
+            try:
+                report = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            manifest = self._read_manifest(path)
+            report["manifest"] = manifest
+            reports.append(report)
+            parts.append({"campaign_dir": str(path.parent), "progress": report})
+        if not reports:
+            raise FileNotFoundError("no readable campaign reports in group")
+
+        task_fields = ["expected", "observed", "complete", "incomplete"]
+        event_fields = [
+            "committed_primaries",
+            "in_flight_primaries",
+            "committed_raw_singles",
+            "committed_accepted_singles",
+            "committed_tracks",
+            "committed_steps",
+            "loops_complete",
+            "loops_in_flight",
+        ]
+        time_fields = [
+            "committed_simulation_seconds",
+            "in_flight_simulation_seconds",
+            "committed_init_seconds",
+            "task_wall_seconds_sum",
+            "task_wall_wallclock_seconds",
+        ]
+        tasks = self._sum_fields(reports, "tasks", task_fields)
+        events = self._sum_fields(reports, "events", event_fields)
+        timing = self._sum_fields(reports, "time", time_fields)
+        expected = tasks["expected"]
+        tasks["percent_complete"] = (
+            100.0 * tasks["complete"] / expected if expected else 0.0
+        )
+        sim_seconds = timing["committed_simulation_seconds"]
+        rates = {}
+        for field, numerator in (
+            ("primaries_per_second", events["committed_primaries"]),
+            ("tracks_per_second", events["committed_tracks"]),
+            ("steps_per_second", events["committed_steps"]),
+            ("raw_singles_per_second", events["committed_raw_singles"]),
+            ("accepted_singles_per_second", events["committed_accepted_singles"]),
+        ):
+            rates[field] = numerator / sim_seconds if sim_seconds else None
+        rates["accepted_fraction_of_raw"] = (
+            events["committed_accepted_singles"] / events["committed_raw_singles"]
+            if events["committed_raw_singles"]
+            else None
+        )
+        rates["singles_per_primary"] = (
+            events["committed_raw_singles"] / events["committed_primaries"]
+            if events["committed_primaries"]
+            else None
+        )
+        latest = reports[-1]
+        profile = {}
+        for field in ("peak_rss_mb", "requested_cpus"):
+            values = [r.get("compute_profile", {}).get(field) for r in reports]
+            values = [value for value in values if value is not None]
+            profile[field] = max(values) if values else None
+        profile["tasks_with_profile"] = sum(
+            r.get("compute_profile", {}).get("tasks_with_profile", 0) or 0
+            for r in reports
+        )
+        profile["mean_cpu_pct"] = None
+        profile["mean_cpu_pct_of_allocation"] = None
+        profile["mean_peak_rss_mb"] = None
+        return {
+            "generated_at": time.time(),
+            "campaign_dir": str(self.root),
+            "campaign_group_id": self.group_id,
+            "campaign_parts": len(reports),
+            "parts": parts,
+            "srm_labels": latest.get("srm_labels", []),
+            "tasks": tasks,
+            "events": events,
+            "rates": rates,
+            "time": {
+                **timing,
+                "simulation_fraction_of_wall": (
+                    sim_seconds / timing["task_wall_seconds_sum"]
+                    if timing["task_wall_seconds_sum"]
+                    else None
+                ),
+            },
+            "compute_profile": profile,
+            "srm": latest.get("srm", {}),
+            "group_srm_note": "SRM fields show the newest part until a grouped reduction is generated.",
+        }
+
     def refresh(self) -> None:
         try:
             if self.fetch_command is None:
-                path = self.resolve_path()
-                if path is None:
+                paths = self.resolve_group()
+                if not paths:
                     with self.lock:
                         self.error = f"no campaign report yet under {self.root}"
                     return
+                if self.root is not None and len(paths) > 1:
+                    self.group_paths = paths
+                    data = self._aggregate_group(paths)
+                    with self.lock:
+                        self.payload = data
+                        self.fetched_at = time.time()
+                        self.error = None
+                    return
+                path = paths[0]
+                self.group_paths = paths
                 text = path.read_text()
                 self.local_path = path
             else:
@@ -156,6 +300,15 @@ def make_handler(caches: dict[str, ProgressCache], default_name: str):
             cache = self._select_cache(query)
             if cache is None:
                 self._send_json(404, {"available": False, "error": "unknown campaign"})
+                return
+            if len(cache.group_paths) > 1:
+                self._send_json(
+                    409,
+                    {
+                        "available": False,
+                        "error": "pixel queries require a grouped SRM reduction output",
+                    },
+                )
                 return
             ssh_host = cache.ssh_host
             remote_repo_root = cache.remote_repo_root

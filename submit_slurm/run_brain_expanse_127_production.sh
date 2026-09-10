@@ -11,6 +11,11 @@ JOB_COUNT="${JOB_COUNT:-100}"
 CONCURRENT_LIMIT="${CONCURRENT_LIMIT:-64}"
 NUM_LOOPS="${NUM_LOOPS:-10}"
 TIME_LIMIT="${TIME_LIMIT:-48:00:00}"
+REPORT_TIME_LIMIT="${REPORT_TIME_LIMIT:-2-00:00:00}"
+ARRAY_DEPENDENCY="${ARRAY_DEPENDENCY:-}"
+CAMPAIGN_GROUP_ID="${CAMPAIGN_GROUP_ID:-}"
+CAMPAIGN_PART_INDEX="${CAMPAIGN_PART_INDEX:-}"
+CAMPAIGN_PART_COUNT="${CAMPAIGN_PART_COUNT:-}"
 
 if [[ "$(hostname -s)" != login* ]]; then
     echo "Run this from an Expanse login node." >&2
@@ -23,6 +28,11 @@ fi
 
 # Each loop targets 7.9375e9 primaries. Defaults target 7.9375e12 primaries.
 # Aggregate completed batches locally and sum their stats-file primary counts.
+ARRAY_DEPENDENCY_ARGS=()
+if [[ -n "$ARRAY_DEPENDENCY" ]]; then
+    ARRAY_DEPENDENCY_ARGS=(--array-dependency "$ARRAY_DEPENDENCY")
+fi
+export CAMPAIGN_GROUP_ID CAMPAIGN_PART_INDEX CAMPAIGN_PART_COUNT
 exec bash "${REPO_ROOT}/submit_slurm/run_spect_sim_slurm.sh" brain \
     --cluster expanse \
     --account "${ACCOUNT}" \
@@ -46,4 +56,5 @@ exec bash "${REPO_ROOT}/submit_slurm/run_spect_sim_slurm.sh" brain \
     --report-partition shared \
     --report-cpus 1 \
     --report-mem-gb 2 \
-    --report-time-limit 2-00:00:00
+    --report-time-limit "${REPORT_TIME_LIMIT}" \
+    "${ARRAY_DEPENDENCY_ARGS[@]}"

@@ -37,6 +37,10 @@ REPORT_CPUS="1"
 REPORT_MEM_GB="2"
 REPORT_TIME_LIMIT="24:00:00"
 REPORT_PARTITION=""
+ARRAY_DEPENDENCY="${ARRAY_DEPENDENCY:-}"
+CAMPAIGN_GROUP_ID="${CAMPAIGN_GROUP_ID:-}"
+CAMPAIGN_PART_INDEX="${CAMPAIGN_PART_INDEX:-}"
+CAMPAIGN_PART_COUNT="${CAMPAIGN_PART_COUNT:-}"
 
 # Initialize cluster-specific variables
 CLUSTER=""
@@ -61,6 +65,7 @@ usage() {
     echo "            [--combine-groups N]  Tree reduction: merge tasks in N parallel groups before the final merge"
     echo "            [--auto-report] [--report-interval-s SECONDS] [--report-partition PART]"
     echo "            [--report-cpus N] [--report-mem-gb N] [--report-time-limit HH:MM:SS]"
+    echo "            [--array-dependency DEPENDENCY]  Slurm dependency for the simulation array"
     echo "              Submits a small Slurm job (not a login-node process) that refreshes progress.json"
     echo "            [--test-mode] [--dry-run]"
     echo "Supported simulation types: brain, cardiac"
@@ -131,6 +136,7 @@ while [[ $# -gt 0 ]]; do
         --report-mem-gb) REPORT_MEM_GB="$2"; shift 2 ;;
         --report-time-limit) REPORT_TIME_LIMIT="$2"; shift 2 ;;
         --report-partition) REPORT_PARTITION="$2"; shift 2 ;;
+        --array-dependency) ARRAY_DEPENDENCY="$2"; shift 2 ;;
         --nodes)
             echo "Error: --nodes is not a user-facing option in array mode."
             echo "       Control throughput with --job-count and per-job threads with --cpus-per-task."
@@ -449,6 +455,7 @@ fi
 cat >> "$SBATCH_FILE" <<EOF
 #SBATCH --output=${LOG_DIR}/job_%A_%a.out
 #SBATCH --error=${LOG_DIR}/job_%A_%a.err
+$(if [[ -n "$ARRAY_DEPENDENCY" ]]; then printf '#SBATCH --dependency=%s\n' "$ARRAY_DEPENDENCY"; fi)
 
 export REPO_ROOT="${REPO_ROOT}"
 export OUTPUT_DIR="${DATA_DIR}"
@@ -556,6 +563,9 @@ MANIFEST_FILE="${LOG_DIR}/campaign_manifest.json"
 cat > "$MANIFEST_FILE" <<EOF
 {
   "batch_id": "${BATCH_ID}",
+    "campaign_group_id": "${CAMPAIGN_GROUP_ID}",
+    "campaign_part_index": ${CAMPAIGN_PART_INDEX:-null},
+    "campaign_part_count": ${CAMPAIGN_PART_COUNT:-null},
   "generated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "repo_git_commit": "${GIT_COMMIT}",
   "container_sif": "${CONTAINER_SIF}",
