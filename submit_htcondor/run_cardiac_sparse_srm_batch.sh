@@ -125,10 +125,20 @@ STAGE_DIR="${LOG_DIR}/stage"
 
 mkdir -p "$DATA_DIR" "$LOG_DIR"
 
+SRM_CONVERTER="$REPO_ROOT/payload/python/create_spect_sparse_srm_from_batch_root.py"
+if [[ ! -f "$SRM_CONVERTER" ]]; then
+    echo "Error: required SRM converter not found: $SRM_CONVERTER" >&2
+    exit 1
+fi
+
 # Capture the resolved scanner geometry once in the durable batch directory.
 # The OSPool access point has the campaign SIF available locally, while its host
 # Python intentionally does not carry the simulation dependencies.
-LOCAL_CONTAINER_IMAGE="${CONTAINER_IMAGE#osdf:///}"
+if [[ "$CONTAINER_IMAGE" == osdf:///* ]]; then
+    LOCAL_CONTAINER_IMAGE="/${CONTAINER_IMAGE#osdf:///}"
+else
+    LOCAL_CONTAINER_IMAGE="$CONTAINER_IMAGE"
+fi
 if ! command -v apptainer >/dev/null 2>&1 || [[ ! -f "$LOCAL_CONTAINER_IMAGE" ]]; then
     echo "Error: cannot generate cardiac geometry provenance with $LOCAL_CONTAINER_IMAGE" >&2
     exit 1
@@ -136,6 +146,7 @@ fi
 apptainer exec \
     --bind "$REPO_ROOT:$REPO_ROOT" \
     --bind "$DATA_DIR:$DATA_DIR" \
+    --env "PYTHONPATH=$REPO_ROOT/qmirt/src" \
     "$LOCAL_CONTAINER_IMAGE" \
     python3 "$REPO_ROOT/payload/python/write_cardiac_spect_geometry_provenance.py" \
     --output "$DATA_DIR/geometry_provenance.json" \

@@ -12,6 +12,7 @@ FOV_SIZE_MM="${7:-210.0}"
 RESOLUTIONS_MM="${8:-1,1.5,2}"
 
 export PYTHONPATH="$PWD/qmirt/src${PYTHONPATH:+:$PYTHONPATH}"
+export POLARS_MAX_THREADS="${POLARS_MAX_THREADS:-1}"
 
 # With OSDF distribution the sandbox receives one tarball instead of three
 # directories; unpack it before anything looks for payload/ or persistent_data/.
@@ -25,6 +26,12 @@ done
 
 if [[ ! -d payload/python ]]; then
     echo "Error: payload/python missing; neither OSDF tarball nor staged dirs arrived" >&2
+    exit 1
+fi
+
+SRM_CONVERTER="payload/python/create_spect_sparse_srm_from_batch_root.py"
+if [[ ! -f "$SRM_CONVERTER" ]]; then
+    echo "Error: new SRM converter missing from job payload: $SRM_CONVERTER" >&2
     exit 1
 fi
 
@@ -68,7 +75,7 @@ for ((loop_index = 0; loop_index < NUM_LOOPS; loop_index++)); do
     )
     "${sim_cmd[@]}"
 
-    python3 payload/python/generate_spect_sparse_srm.py \
+    python3 "$SRM_CONVERTER" \
         --input-dir "$LOOP_DIR" \
         --output-dir "$SRM_DIR" \
         --resolutions-mm "$RESOLUTIONS_MM" \
