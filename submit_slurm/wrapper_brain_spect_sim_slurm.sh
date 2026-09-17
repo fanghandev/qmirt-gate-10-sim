@@ -156,7 +156,7 @@ build_sparse_worker_command() {
         sparse_worker_cmd=(
             "${APPTAINER_CMD[@]}"
             python3
-            "$REPO_ROOT/payload/python/generate_spect_sparse_srm.py"
+            "$REPO_ROOT/payload/python/create_spect_sparse_srm_from_batch_root.py"
             --input-dir "$input_dir"
             --output-dir "$output_dir"
             --fov-size-mm "${SRM_FOV_SIZE_MM:-210}"
@@ -168,7 +168,7 @@ build_sparse_worker_command() {
     else
         sparse_worker_cmd=(
             python3
-            "$REPO_ROOT/payload/python/generate_spect_sparse_srm.py"
+            "$REPO_ROOT/payload/python/create_spect_sparse_srm_from_batch_root.py"
             --input-dir "$input_dir"
             --output-dir "$output_dir"
             --fov-size-mm "${SRM_FOV_SIZE_MM:-210}"
@@ -238,6 +238,7 @@ write_task_complete_marker() {
 }
 
 run_sparse_workflow() {
+    completed_loops=0
     for ((loop_index = 0; loop_index < NUM_LOOPS; loop_index++)); do
         CURRENT_LOOP_ID="$(printf '%05d' "$loop_index")"
         loop_dir="${LOCAL_RUN_ROOT}/loop_${CURRENT_LOOP_ID}"
@@ -252,13 +253,25 @@ run_sparse_workflow() {
             profile_cmd=("${sim_cmd[@]}")
         fi
         if [[ "$MAX_TASK_SECONDS" =~ ^[0-9]+$ ]] && [[ "$MAX_TASK_SECONDS" -gt 0 ]]; then
-            timeout --signal=TERM --kill-after=30 "$MAX_TASK_SECONDS" "${profile_cmd[@]}"
+            if ! timeout --signal=TERM --kill-after=30 "$MAX_TASK_SECONDS" "${profile_cmd[@]}"; then
+                echo "Loop ${CURRENT_LOOP_ID} simulation failed; combining completed loops." >&2
+                rm -rf "$loop_dir"
+                break
+            fi
         else
-            "${profile_cmd[@]}"
+            if ! "${profile_cmd[@]}"; then
+                echo "Loop ${CURRENT_LOOP_ID} simulation failed; combining completed loops." >&2
+                rm -rf "$loop_dir"
+                break
+            fi
         fi
 
         build_sparse_worker_command "$loop_dir" "$loop_srm_dir"
-        "${sparse_worker_cmd[@]}"
+        if ! "${sparse_worker_cmd[@]}"; then
+            echo "Loop ${CURRENT_LOOP_ID} SRM conversion failed; combining completed loops." >&2
+            rm -rf "$loop_dir"
+            break
+        fi
 
         for resolution_label in 1mm 1p5mm 2mm; do
             cp "$loop_srm_dir/srm_${resolution_label}.npz" \
@@ -277,8 +290,14 @@ run_sparse_workflow() {
         done
         cp "$loop_dir/resource_profile.tsv" "$CHUNK_OUTPUT_DIR/resource_profile_loop_${CURRENT_LOOP_ID}.tsv" 2>/dev/null || true
         cp "$loop_dir/resource_profile_summary.txt" "$CHUNK_OUTPUT_DIR/resource_profile_summary_loop_${CURRENT_LOOP_ID}.txt" 2>/dev/null || true
+        completed_loops=$((completed_loops + 1))
         rm -rf "$loop_dir"
     done
+
+    if [[ "$completed_loops" -eq 0 ]]; then
+        echo "Error: no completed loops produced SRM inputs." >&2
+        return 1
+    fi
 
     # Sum actual completed-loop primaries so combined_srm_metadata.json's
     # simulated_primaries matches exactly the loops folded into the SRM
@@ -305,7 +324,6 @@ PY
             --input-dir "$CHUNK_OUTPUT_DIR"
             --output-dir "$OUT_DIR"
             --expected-inputs "$NUM_LOOPS"
-            --require-complete
             --no-split-per-head
             --simulated-primaries "$SIMULATED_PRIMARIES"
         )
@@ -316,13 +334,16 @@ PY
             --input-dir "$CHUNK_OUTPUT_DIR"
             --output-dir "$OUT_DIR"
             --expected-inputs "$NUM_LOOPS"
-            --require-complete
             --no-split-per-head
             --simulated-primaries "$SIMULATED_PRIMARIES"
         )
     fi
     "${combine_cmd[@]}"
-    write_task_complete_marker
+    if [[ "$completed_loops" -eq "$NUM_LOOPS" ]]; then
+        write_task_complete_marker
+    else
+        echo "Wrote partial SRMs for ${completed_loops}/${NUM_LOOPS} completed loops; task remains incomplete."
+    fi
 }
 
 if [[ "$SPARSE_SRM" == "1" ]]; then

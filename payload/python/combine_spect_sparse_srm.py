@@ -467,7 +467,7 @@ def main() -> int:
                     staging_dir,
                     label,
                     result["coords"],
-                    result["counts"],
+                    result["counts"],  # type: ignore
                     metadata["grid_size"],
                     args.num_heads,
                     args.pixels_per_head,
@@ -497,7 +497,7 @@ def main() -> int:
             np.savez_compressed(
                 output_path,
                 coords=result["coords"],
-                counts=result["counts"],
+                counts=result["counts"],  # type: ignore
                 voxel_size_mm=np.asarray([metadata["voxel_size_mm"]], dtype=np.float32),
                 grid_size=np.asarray([metadata["grid_size"]], dtype=np.int32),
                 hist_range=np.asarray(metadata["hist_range"], dtype=np.float32),
@@ -511,7 +511,8 @@ def main() -> int:
                 input_count=np.asarray([found], dtype=np.int64),
                 expected_input_count=np.asarray([args.expected_inputs], dtype=np.int64),
                 accumulated_counts=np.asarray(
-                    [int(result["counts"].sum())], dtype=np.int64
+                    [int(result["counts"].sum())],  # type: ignore
+                    dtype=np.int64,
                 ),
                 source_files=np.asarray(result["source_names"], dtype=str),
             )
