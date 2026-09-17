@@ -11,13 +11,13 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
+import polars as pl
 import uproot
 
-Coordinate = tuple[int, int, int, int, int]
+COORDINATE_COLUMNS = ["crystal", "pixel", "x", "y", "z"]
 
 
 def parse_resolutions(value: str) -> list[float]:
@@ -135,7 +135,7 @@ def validate_grid(fov_size_mm: float, resolutions_mm: list[float]) -> dict[float
 
 
 def accumulate_batch(
-    accumulators: dict[float, defaultdict[Coordinate, int]],
+    accumulators: dict[float, list[pl.DataFrame]],
     resolutions_mm: list[float],
     grid_sizes: dict[float, int],
     crystal_id: int,
@@ -164,21 +164,29 @@ def accumulate_batch(
             & (pixel_ids < pixels_per_head)
         )
         valid_events = max(valid_events, int(np.count_nonzero(valid_mask)))
-        for pixel_id, x_bin, y_bin, z_bin in zip(
-            pixel_ids[valid_mask],
-            index_x[valid_mask],
-            index_y[valid_mask],
-            index_z[valid_mask],
-        ):
-            accumulators[resolution_mm][
-                (crystal_id, int(pixel_id), int(x_bin), int(y_bin), int(z_bin))
-            ] += 1
+        if np.any(valid_mask):
+            batch = (
+                pl.DataFrame(
+                    {
+                        "crystal": np.full(
+                            np.count_nonzero(valid_mask), crystal_id, dtype=np.int32
+                        ),
+                        "pixel": pixel_ids[valid_mask],
+                        "x": index_x[valid_mask],
+                        "y": index_y[valid_mask],
+                        "z": index_z[valid_mask],
+                    }
+                )
+                .group_by(COORDINATE_COLUMNS)
+                .agg(pl.len().cast(pl.Int64).alias("counts"))
+            )
+            accumulators[resolution_mm].append(batch)
     return valid_events
 
 
 def save_outputs(
     output_dir: Path,
-    accumulators: dict[float, defaultdict[Coordinate, int]],
+    accumulators: dict[float, list[pl.DataFrame]],
     resolutions_mm: list[float],
     grid_sizes: dict[float, int],
     args: argparse.Namespace,
@@ -189,9 +197,25 @@ def save_outputs(
     output_dir.mkdir(parents=True, exist_ok=True)
     output_names = []
     for resolution_mm in resolutions_mm:
-        entries = accumulators[resolution_mm]
-        coords = np.asarray(list(entries), dtype=np.int32).reshape(-1, 5)
-        counts = np.asarray(list(entries.values()), dtype=np.int64)
+        batches = accumulators[resolution_mm]
+        if batches:
+            entries = (
+                pl.concat(batches, rechunk=False)
+                .group_by(COORDINATE_COLUMNS)
+                .agg(pl.col("counts").sum())
+                .sort(COORDINATE_COLUMNS)
+            )
+            coords = (
+                entries.select(COORDINATE_COLUMNS)
+                .to_numpy()
+                .astype(np.int32, copy=False)
+            )
+            counts = (
+                entries.get_column("counts").to_numpy().astype(np.int64, copy=False)
+            )
+        else:
+            coords = np.empty((0, 5), dtype=np.int32)
+            counts = np.empty((0,), dtype=np.int64)
         output_path = (
             output_dir / f"{args.output_stem}_{resolution_label(resolution_mm)}.npz"
         )
@@ -244,7 +268,9 @@ def main() -> int:
         # rather than failing the whole task.
         print(f"Warning: no ROOT files in {args.input_dir}; writing empty SRMs")
 
-    accumulators = {resolution_mm: defaultdict(int) for resolution_mm in resolutions_mm}
+    accumulators: dict[float, list[pl.DataFrame]] = {
+        resolution_mm: [] for resolution_mm in resolutions_mm
+    }
     branches = [
         "TotalEnergyDeposit",
         "EventPosition_X",
@@ -265,7 +291,7 @@ def main() -> int:
                 if class_name == "TTree" and "Pixel_" in name and "_Singles" in name
             ]
             for tree_name in tree_names:
-                tree = root_file[tree_name]
+                tree: uproot.TTree = root_file[tree_name]
                 for data in tree.iterate(
                     branches, library="np", step_size=args.step_size
                 ):

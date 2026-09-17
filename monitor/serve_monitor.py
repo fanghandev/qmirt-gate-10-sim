@@ -77,9 +77,7 @@ class ProgressCache:
             except (OSError, json.JSONDecodeError):
                 continue
             if manifest.get("campaign_group_id") == group_id:
-                progress_path = manifest_path.parent / "progress.json"
-                if progress_path.is_file():
-                    paths.append(progress_path)
+                paths.append(manifest_path.parent / "progress.json")
         self.group_id = group_id
         return sorted(paths)
 
@@ -98,6 +96,9 @@ class ProgressCache:
         result = {
             "num_loops": manifest.get("num_loops"),
             "job_count": manifest.get("job_count"),
+            "expected_events_total": manifest.get("expected_events_total"),
+            "campaign_part_index": manifest.get("campaign_part_index"),
+            "campaign_part_count": manifest.get("campaign_part_count"),
         }
         provenance_name = manifest.get("geometry_provenance_file")
         if isinstance(provenance_name, str):
@@ -118,15 +119,34 @@ class ProgressCache:
     def _aggregate_group(self, paths: list[Path]) -> dict:
         reports = []
         parts = []
+        expected_tasks = 0
+        expected_events = 0
+        num_loops = None
         for path in paths:
+            manifest = self._read_manifest(path)
+            expected_tasks += manifest.get("job_count") or 0
+            expected_events += manifest.get("expected_events_total") or 0
+            num_loops = num_loops or manifest.get("num_loops")
             try:
                 report = json.loads(path.read_text())
             except (OSError, json.JSONDecodeError):
+                parts.append(
+                    {
+                        "campaign_dir": str(path.parent),
+                        "manifest": manifest,
+                        "progress": None,
+                    }
+                )
                 continue
-            manifest = self._read_manifest(path)
             report["manifest"] = manifest
             reports.append(report)
-            parts.append({"campaign_dir": str(path.parent), "progress": report})
+            parts.append(
+                {
+                    "campaign_dir": str(path.parent),
+                    "manifest": manifest,
+                    "progress": report,
+                }
+            )
         if not reports:
             raise FileNotFoundError("no readable campaign reports in group")
 
@@ -151,6 +171,9 @@ class ProgressCache:
         tasks = self._sum_fields(reports, "tasks", task_fields)
         events = self._sum_fields(reports, "events", event_fields)
         timing = self._sum_fields(reports, "time", time_fields)
+        if expected_tasks:
+            tasks["expected"] = expected_tasks
+            tasks["incomplete"] = max(0, expected_tasks - tasks["complete"])
         expected = tasks["expected"]
         tasks["percent_complete"] = (
             100.0 * tasks["complete"] / expected if expected else 0.0
@@ -192,8 +215,14 @@ class ProgressCache:
             "generated_at": time.time(),
             "campaign_dir": str(self.root),
             "campaign_group_id": self.group_id,
-            "campaign_parts": len(reports),
+            "campaign_parts": len(paths),
+            "campaign_parts_reported": len(reports),
             "parts": parts,
+            "manifest": {
+                "num_loops": num_loops,
+                "job_count": expected_tasks,
+                "expected_events_total": expected_events,
+            },
             "srm_labels": latest.get("srm_labels", []),
             "tasks": tasks,
             "events": events,
@@ -435,21 +464,20 @@ def make_handler(caches: dict[str, ProgressCache], default_name: str):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Local SRM progress dashboard.")
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument(
+    parser.add_argument(
         "--local-json",
         type=Path,
         help="Path to a progress JSON on this machine.",
     )
-    source.add_argument(
+    parser.add_argument(
         "--ssh-host",
         help="SSH destination, e.g. user@data.bridges2.psc.edu.",
     )
-    source.add_argument(
+    parser.add_argument(
         "--fetch-command",
         help="Arbitrary shell command whose stdout is the progress JSON.",
     )
-    source.add_argument(
+    parser.add_argument(
         "--campaign",
         action="append",
         metavar="NAME=PATH",
@@ -459,7 +487,7 @@ def parse_args() -> argparse.Namespace:
             "dashboard shows a selector. Paths must be local to this machine."
         ),
     )
-    source.add_argument(
+    parser.add_argument(
         "--campaign-root",
         action="append",
         metavar="NAME=DIR",
@@ -489,6 +517,17 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if not (
+        args.local_json
+        or args.ssh_host
+        or args.fetch_command
+        or args.campaign
+        or args.campaign_root
+    ):
+        raise SystemExit(
+            "one of --local-json, --ssh-host, --fetch-command, --campaign, "
+            "or --campaign-root is required"
+        )
     if args.ssh_host and not args.remote_json:
         raise SystemExit("--ssh-host requires --remote-json")
 

@@ -220,6 +220,8 @@ def main() -> int:
                 str(args.num_heads),
                 "--pixels-per-head",
                 str(args.pixels_per_head),
+                "--workers",
+                str(args.workers),
                 "--expected-inputs",
                 str(shard_count),
                 "--require-complete",

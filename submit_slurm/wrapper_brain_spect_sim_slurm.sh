@@ -280,6 +280,23 @@ run_sparse_workflow() {
         rm -rf "$loop_dir"
     done
 
+    # Sum actual completed-loop primaries so combined_srm_metadata.json's
+    # simulated_primaries matches exactly the loops folded into the SRM
+    # (loops that never finished never got a stats file copied here).
+    SIMULATED_PRIMARIES="$(python3 - "$CHUNK_OUTPUT_DIR" <<'PY'
+import glob, json, os, sys
+
+total = 0
+for path in glob.glob(os.path.join(sys.argv[1], "*_sim_stats_loop_*.txt")):
+    try:
+        with open(path) as handle:
+            total += int(json.load(handle)["events"]["value"])
+    except (OSError, ValueError, KeyError, TypeError):
+        continue
+print(total)
+PY
+)"
+
     if [[ ${#APPTAINER_CMD[@]} -gt 0 ]]; then
         combine_cmd=(
             "${APPTAINER_CMD[@]}"
@@ -290,6 +307,7 @@ run_sparse_workflow() {
             --expected-inputs "$NUM_LOOPS"
             --require-complete
             --no-split-per-head
+            --simulated-primaries "$SIMULATED_PRIMARIES"
         )
     else
         combine_cmd=(
@@ -300,6 +318,7 @@ run_sparse_workflow() {
             --expected-inputs "$NUM_LOOPS"
             --require-complete
             --no-split-per-head
+            --simulated-primaries "$SIMULATED_PRIMARIES"
         )
     fi
     "${combine_cmd[@]}"

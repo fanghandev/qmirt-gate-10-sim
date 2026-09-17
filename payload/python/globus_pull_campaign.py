@@ -28,7 +28,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CAMPAIGN_FILES = (
     ("progress.json", CLUSTER_PROGRESS_NAME),
     ("campaign_manifest.json", "campaign_manifest.json"),
+    ("geometry_provenance.json", "geometry_provenance.json"),
 )
+LOOP_STATS_GLOB = "*_sim_stats_loop_*.txt"
+FINAL_SRM_NAMES = ("final_srm_1mm.npz", "final_srm_1p5mm.npz", "final_srm_2mm.npz")
 
 
 def parse_args() -> argparse.Namespace:
@@ -69,6 +72,24 @@ def parse_args() -> argparse.Namespace:
         help="Refresh progress from the mount without any Globus transfer. Requires --mount-path.",
     )
     parser.add_argument(
+        "--mount-root",
+        help=(
+            "Parent directory (on a local mount) containing several sibling campaign "
+            "directories, e.g. ~/sdsc-expanse/brain_spect_sim. When set, every matching "
+            "campaign is harvested directly off the mount (no Globus involved)."
+        ),
+    )
+    parser.add_argument(
+        "--campaign-glob",
+        default="*",
+        help="Glob (relative to --mount-root) selecting campaign directories to harvest.",
+    )
+    parser.add_argument(
+        "--local-root",
+        help="Local destination parent directory for --mount-root harvests "
+        "(each campaign lands in <local-root>/<campaign-name>).",
+    )
+    parser.add_argument(
         "--globus-cli", default="globus", help="globus executable to use."
     )
     parser.add_argument(
@@ -78,7 +99,7 @@ def parse_args() -> argparse.Namespace:
         "--max-tasks",
         type=int,
         default=0,
-        help="Cap on task directories pulled per run (0 means no cap).",
+        help="Cap on task directories pulled per campaign per run (0 means no cap).",
     )
     parser.add_argument(
         "--purge-after-pull",
@@ -131,6 +152,11 @@ def load_config(path: str) -> dict[str, str]:
 
 def resolve_settings(args: argparse.Namespace) -> argparse.Namespace:
     config = load_config(args.config) if args.config else {}
+    # Mount-root harvests read and write local paths only, no Globus/endpoint config needed.
+    if args.mount_root:
+        if not args.local_root:
+            raise SystemExit("--mount-root requires --local-root")
+        return args
     mapping = {
         "source_endpoint": "QMIRT_SRC_ENDPOINT",
         "source_path": "QMIRT_SRC_PATH",
@@ -292,8 +318,199 @@ def copy_campaign_files_from_mount(mount: Path, local_campaign: Path) -> list[st
     return copied
 
 
+def campaign_started(campaign_dir: Path) -> bool:
+    """A campaign shard counts as started once its reporter has written progress.json."""
+    return (campaign_dir / "progress.json").is_file()
+
+
+def loops_done_count(task_dir: Path) -> int:
+    return len(list((task_dir / "srm_chunks").glob(LOOP_STATS_GLOB)))
+
+
+def classify_task(task_dir: Path) -> str:
+    """Return "complete", "partial", or "in_flight" for one remote task directory.
+
+    "in_flight" tasks are still running (or queued) with zero finished loops yet,
+    so there is nothing durable to pull; they are skipped rather than waited on.
+    """
+    if (task_dir / MARKER_NAME).is_file():
+        return "complete"
+    if loops_done_count(task_dir) > 0:
+        return "partial"
+    return "in_flight"
+
+
+def pull_complete_task(mount_task: Path, local_task: Path) -> bool:
+    """Copy one finished task's combined SRMs; returns True once checksums verify."""
+    local_task.mkdir(parents=True, exist_ok=True)
+    names = [*FINAL_SRM_NAMES, "combined_srm_metadata.json", MARKER_NAME]
+    wall_time_name = f"{mount_task.name}_wall_time.txt"
+    if (mount_task / wall_time_name).is_file():
+        names.append(wall_time_name)
+    for name in names:
+        source = mount_task / name
+        if not source.is_file():
+            continue
+        with tempfile.NamedTemporaryFile(dir=local_task, delete=False) as handle:
+            temp_name = handle.name
+        shutil.copyfile(source, temp_name)
+        os.replace(temp_name, local_task / name)
+    return verify_task(local_task.parent, local_task.name) is not None
+
+
+def pull_partial_task(mount_task: Path, local_task: Path) -> int:
+    """Mirror a still-running task's finished loop chunks; returns loops copied."""
+    chunk_source = mount_task / "srm_chunks"
+    local_task.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["rsync", "-a", f"{chunk_source}/", f"{local_task / 'srm_chunks'}/"],
+        check=True,
+    )
+    wall_time_name = f"{mount_task.name}_wall_time.txt"
+    source_wall_time = mount_task / wall_time_name
+    if source_wall_time.is_file():
+        shutil.copyfile(source_wall_time, local_task / wall_time_name)
+    return loops_done_count(local_task)
+
+
+def finalize_simulated_primaries(local_campaign: Path) -> None:
+    """Patch simulated_primaries and combine any partial tasks just pulled."""
+    subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "payload" / "python" / "finalize_task_srm.py"),
+            str(local_campaign),
+            "--apply",
+        ],
+        check=True,
+    )
+
+
+def harvest_campaign(
+    mount_campaign: Path,
+    local_campaign: Path,
+    *,
+    max_tasks: int = 0,
+    dry_run: bool = False,
+) -> dict:
+    """Pull one campaign shard's ready tasks straight off a local mount."""
+    ledger_path = local_campaign / LEDGER_NAME
+    ledger = load_ledger(ledger_path)
+    pulled_state: dict = ledger.setdefault("pulled", {})
+
+    if not dry_run:
+        copy_campaign_files_from_mount(mount_campaign, local_campaign)
+
+    task_dirs = sorted(
+        (p for p in mount_campaign.glob("task_*") if p.is_dir()),
+        key=lambda p: int(p.name.removeprefix("task_")),
+    )
+    complete_count = partial_count = in_flight_count = 0
+    processed = 0
+    for task_dir in task_dirs:
+        if max_tasks and processed >= max_tasks:
+            break
+        name = task_dir.name
+        state = classify_task(task_dir)
+        recorded = pulled_state.get(name)
+
+        if state == "in_flight":
+            in_flight_count += 1
+            continue
+
+        if state == "complete":
+            if recorded and recorded.get("status") == "complete":
+                continue
+            processed += 1
+            if dry_run:
+                print(f"  [dry-run] would pull complete {name}")
+                complete_count += 1
+                continue
+            if pull_complete_task(task_dir, local_campaign / name):
+                pulled_state[name] = {"status": "complete"}
+                complete_count += 1
+            else:
+                print(f"  {name}: verification failed after pull", file=sys.stderr)
+            continue
+
+        # state == "partial": only re-pull once new loops have finished remotely.
+        loops_done = loops_done_count(task_dir)
+        if recorded and recorded.get("loops_done") == loops_done:
+            continue
+        processed += 1
+        if dry_run:
+            print(f"  [dry-run] would refresh partial {name} ({loops_done} loops done)")
+            partial_count += 1
+            continue
+        copied_loops = pull_partial_task(task_dir, local_campaign / name)
+        pulled_state[name] = {"status": "partial", "loops_done": copied_loops}
+        partial_count += 1
+
+    if not dry_run:
+        save_ledger(ledger_path, ledger)
+
+    return {
+        "complete": complete_count,
+        "partial": partial_count,
+        "in_flight_skipped": in_flight_count,
+    }
+
+
+def harvest_root(
+    mount_root: Path,
+    local_root: Path,
+    campaign_glob: str,
+    *,
+    max_tasks: int = 0,
+    dry_run: bool = False,
+    combine_after_pull: bool = False,
+    report_after_pull: bool = False,
+    expected_tasks: int = 0,
+    no_srm_stats: bool = False,
+) -> dict[str, dict]:
+    """Harvest every started campaign shard matching *campaign_glob* under *mount_root*."""
+    summary: dict[str, dict] = {}
+    for mount_campaign in sorted(
+        p for p in mount_root.glob(campaign_glob) if p.is_dir()
+    ):
+        name = mount_campaign.name
+        if not campaign_started(mount_campaign):
+            print(f"Skipping {name}: not started (no progress.json)")
+            continue
+
+        print(f"== {name} ==")
+        local_campaign = local_root / name
+        result = harvest_campaign(
+            mount_campaign, local_campaign, max_tasks=max_tasks, dry_run=dry_run
+        )
+        print(
+            f"  complete={result['complete']} partial={result['partial']} "
+            f"in_flight_skipped={result['in_flight_skipped']}"
+        )
+        summary[name] = result
+
+        if dry_run:
+            continue
+        if result["complete"] or result["partial"]:
+            print("  finalizing simulated_primaries / partial combines...")
+            finalize_simulated_primaries(local_campaign)
+        if combine_after_pull and result["complete"]:
+            combine_campaign(local_campaign, expected_tasks)
+        if report_after_pull:
+            report_campaign(local_campaign, expected_tasks, no_srm_stats)
+    return summary
+
+
 def build_batch(tasks: list[str], campaign_files: list[tuple[str, str]]) -> str:
-    lines = [f"--recursive {task} {task}" for task in tasks]
+    """Batch lines for one Globus transfer: only each complete task's combined SRMs.
+
+    Raw per-loop srm_chunks are never transferred here; a task only ever appears
+    in *tasks* once TASK_COMPLETE.json exists, so the combined files are enough.
+    """
+    lines = []
+    for task in tasks:
+        for name in (*FINAL_SRM_NAMES, "combined_srm_metadata.json", MARKER_NAME):
+            lines.append(f"{task}/{name} {task}/{name}")
     lines.extend(f"{remote} {local}" for remote, local in campaign_files)
     return "\n".join(lines) + "\n"
 
@@ -415,6 +632,23 @@ def report_campaign(
 def main() -> int:
     args = resolve_settings(parse_args())
 
+    if args.mount_root:
+        mount_root = Path(args.mount_root).expanduser()
+        if not mount_root.is_dir():
+            raise SystemExit(f"Mount root is not readable (stale mount?): {mount_root}")
+        harvest_root(
+            mount_root,
+            Path(args.local_root).expanduser(),
+            args.campaign_glob,
+            max_tasks=args.max_tasks,
+            dry_run=args.dry_run,
+            combine_after_pull=args.combine_after_pull,
+            report_after_pull=args.report_after_pull,
+            expected_tasks=args.expected_tasks,
+            no_srm_stats=args.no_srm_stats,
+        )
+        return 0
+
     local_campaign = Path(args.local_path)
     mount = Path(args.mount_path) if args.mount_path else None
     if mount is not None and not mount.is_dir():
@@ -470,6 +704,8 @@ def main() -> int:
         return 0
 
     local_campaign.mkdir(parents=True, exist_ok=True)
+    for task in tasks:
+        (local_campaign / task).mkdir(parents=True, exist_ok=True)
     task_id = submit_transfer(args, batch)
     print(f"Submitted Globus task {task_id}; waiting...")
     run_globus(args.globus_cli, ["task", "wait", task_id], capture=False)
@@ -495,6 +731,10 @@ def main() -> int:
         for task in verified:
             purge_task(args, task)
             print(f"Purged remote {task}")
+
+    if verified:
+        print("Checking simulated_primaries...")
+        finalize_simulated_primaries(local_campaign)
 
     if args.combine_after_pull and verified:
         print("Combining campaign locally...")

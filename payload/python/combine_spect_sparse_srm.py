@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -88,6 +89,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=625,
         help="Detector pixels per head; becomes the row count of each per-head SRM.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Parallel workers for independent per-head merges when splitting SRMs.",
     )
     parser.add_argument(
         "--simulated-primaries",
@@ -192,6 +199,58 @@ def combine_resolution(
     }
 
 
+def resolve_input_paths(
+    input_dir: Path,
+    resolution_mm: float,
+    input_glob: str,
+    shard_index: int,
+    shard_count: int,
+) -> list[Path]:
+    paths = sorted(
+        input_dir.glob(input_glob.format(label=resolution_label(resolution_mm)))
+    )
+    return paths[shard_index::shard_count] if shard_count > 1 else paths
+
+
+def inspect_input_paths(paths: list[Path], input_dir: Path) -> dict:
+    reference = None
+    source_names = []
+    chunk_count = 0
+    for path in paths:
+        with np.load(path, allow_pickle=False) as data:
+            metadata = {
+                "voxel_size_mm": float(
+                    np.asarray(data["voxel_size_mm"]).reshape(-1)[0]
+                ),
+                "grid_size": int(np.asarray(data["grid_size"]).reshape(-1)[0]),
+                "hist_range": np.asarray(data["hist_range"]).reshape(-1).tolist(),
+                "energy_min_kev": float(
+                    np.asarray(data["energy_min_kev"]).reshape(-1)[0]
+                ),
+                "energy_max_kev": float(
+                    np.asarray(data["energy_max_kev"]).reshape(-1)[0]
+                ),
+            }
+            if reference is None:
+                reference = metadata
+            elif metadata != reference:
+                raise ValueError(f"Metadata mismatch in {path}")
+            chunk_count += (
+                int(np.asarray(data["chunk_count"]).reshape(-1)[0])
+                if "chunk_count" in data.files
+                else 1
+            )
+        source_names.append(path.relative_to(input_dir).as_posix())
+    if reference is None:
+        raise FileNotFoundError("No SRM inputs found")
+    return {
+        "metadata": reference,
+        "input_count": len(paths),
+        "chunk_count": chunk_count,
+        "source_names": source_names,
+    }
+
+
 def write_per_head_srms(
     output_dir: Path,
     label: str,
@@ -254,10 +313,85 @@ def write_per_head_srms(
     return entries
 
 
+def merge_one_head(
+    input_paths: list[Path],
+    label: str,
+    head_index: int,
+    output_dir: Path,
+    grid_size: int,
+    pixels_per_head: int,
+) -> dict:
+    """Merge one detector head so independent heads can use separate processes."""
+    acc_coords = np.empty((0, 5), dtype=np.int32)
+    acc_counts = np.empty((0,), dtype=np.int64)
+    for path in input_paths:
+        with np.load(path, allow_pickle=False) as data:
+            coords = np.asarray(data["coords"], dtype=np.int32)
+            counts = np.asarray(data["counts"], dtype=np.int64)
+        selected = coords[:, 0] == head_index
+        if selected.any():
+            acc_coords, acc_counts = merge_sparse(
+                acc_coords, acc_counts, coords[selected], counts[selected]
+            )
+
+    num_voxels = grid_size**3
+    if acc_coords.size:
+        pixel_ids = acc_coords[:, 1].astype(np.int64, copy=False)
+        voxel_ids = (
+            acc_coords[:, 2].astype(np.int64, copy=False) * grid_size * grid_size
+            + acc_coords[:, 3].astype(np.int64, copy=False) * grid_size
+            + acc_coords[:, 4].astype(np.int64, copy=False)
+        )
+        if pixel_ids.min() < 0 or pixel_ids.max() >= pixels_per_head:
+            raise ValueError(f"Pixel IDs out of range in head {head_index + 1}")
+    else:
+        pixel_ids = np.empty((0,), dtype=np.int64)
+        voxel_ids = np.empty((0,), dtype=np.int64)
+    matrix = coo_matrix(
+        (acc_counts, (pixel_ids, voxel_ids)),
+        shape=(pixels_per_head, num_voxels),
+        dtype=np.int64,
+    ).tocsr()
+    matrix.sum_duplicates()
+    matrix.eliminate_zeros()
+    output_path = output_dir / f"final_srm_{label}_head_{head_index + 1:02d}.npz"
+    save_npz(output_path, matrix)
+    return {
+        "head": head_index + 1,
+        "output": output_path.name,
+        "nonzero_entries": int(matrix.nnz),
+        "accumulated_counts": int(matrix.sum()),
+    }
+
+
+def write_per_head_srms_parallel(
+    output_dir: Path,
+    label: str,
+    input_paths: list[Path],
+    grid_size: int,
+    num_heads: int,
+    pixels_per_head: int,
+    workers: int,
+) -> list[dict]:
+    tasks = [
+        (input_paths, label, head_index, output_dir, grid_size, pixels_per_head)
+        for head_index in range(num_heads)
+    ]
+    with ProcessPoolExecutor(max_workers=min(workers, len(tasks))) as executor:
+        entries = list(executor.map(merge_one_head_task, tasks))
+    return entries
+
+
+def merge_one_head_task(task: tuple) -> dict:
+    return merge_one_head(*task)
+
+
 def main() -> int:
     args = parse_args()
     if args.shard_count < 1:
         raise ValueError("--shard-count must be at least 1")
+    if args.workers < 1:
+        raise ValueError("--workers must be at least 1")
     if not 0 <= args.shard_index < args.shard_count:
         raise ValueError("--shard-index must be in [0, --shard-count)")
     resolutions_mm = list(dict.fromkeys(args.resolutions_mm))
@@ -272,13 +406,24 @@ def main() -> int:
 
     for resolution_mm in resolutions_mm:
         label = resolution_label(resolution_mm)
-        result = combine_resolution(
+        paths = resolve_input_paths(
             args.input_dir,
             resolution_mm,
             args.input_glob,
             args.shard_index,
             args.shard_count,
         )
+        if args.split_per_head and args.workers > 1:
+            inspected = inspect_input_paths(paths, args.input_dir)
+            result = {**inspected, "coords": None, "counts": None}
+        else:
+            result = combine_resolution(
+                args.input_dir,
+                resolution_mm,
+                args.input_glob,
+                args.shard_index,
+                args.shard_count,
+            )
         found = result["input_count"]
         if found < args.min_inputs:
             raise ValueError(
@@ -297,21 +442,36 @@ def main() -> int:
             "input_count": found,
             "expected_input_count": args.expected_inputs,
             "complete": not args.expected_inputs or found == args.expected_inputs,
-            "nonzero_entries": int(result["counts"].size),
-            "accumulated_counts": int(result["counts"].sum()),
+            "nonzero_entries": (
+                int(result["counts"].size) if result["counts"] is not None else 0
+            ),
+            "accumulated_counts": (
+                int(result["counts"].sum()) if result["counts"] is not None else 0
+            ),
             "simulated_primaries": args.simulated_primaries,
             "source_files": result["source_names"],
         }
         if args.split_per_head:
-            head_entries = write_per_head_srms(
-                staging_dir,
-                label,
-                result["coords"],
-                result["counts"],
-                metadata["grid_size"],
-                args.num_heads,
-                args.pixels_per_head,
-            )
+            if args.workers > 1:
+                head_entries = write_per_head_srms_parallel(
+                    staging_dir,
+                    label,
+                    paths,
+                    metadata["grid_size"],
+                    args.num_heads,
+                    args.pixels_per_head,
+                    args.workers,
+                )
+            else:
+                head_entries = write_per_head_srms(
+                    staging_dir,
+                    label,
+                    result["coords"],
+                    result["counts"],
+                    metadata["grid_size"],
+                    args.num_heads,
+                    args.pixels_per_head,
+                )
             summary["resolutions"][label] = {
                 # save_npz cannot carry extra keys, so the grid/energy metadata
                 # the per-head CSR files need lives here instead.
@@ -326,6 +486,12 @@ def main() -> int:
                 "energy_min_kev": metadata["energy_min_kev"],
                 "energy_max_kev": metadata["energy_max_kev"],
                 **common_summary,
+                "nonzero_entries": sum(
+                    entry["nonzero_entries"] for entry in head_entries
+                ),
+                "accumulated_counts": sum(
+                    entry["accumulated_counts"] for entry in head_entries
+                ),
             }
         else:
             np.savez_compressed(

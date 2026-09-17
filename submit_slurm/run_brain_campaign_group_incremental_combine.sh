@@ -13,6 +13,7 @@ GROUP_ROOT="${1:?Usage: $0 GROUP_ROOT GROUP_ID [OUTPUT_DIR]}"
 GROUP_ID="${2:?Usage: $0 GROUP_ROOT GROUP_ID [OUTPUT_DIR]}"
 OUTPUT_DIR="${3:-${GROUP_ROOT}/group_${GROUP_ID}_aggregate}"
 SHARD_COUNT="${SHARD_COUNT:-16}"
+WORKERS="${WORKERS:-32}"
 
 GROUP_ROOT="$(cd "$GROUP_ROOT" && pwd)"
 mkdir -p "$OUTPUT_DIR"
@@ -78,6 +79,7 @@ python3 "$REPO_ROOT/payload/python/incremental_sparse_srm_aggregate.py" \
     --num-heads 73 \
     --pixels-per-head 625 \
     --shard-count "$SHARD_COUNT" \
+    --workers "$WORKERS" \
     --simulated-primaries "$SIMULATED_PRIMARIES"
 
 printf 'Grouped campaign: %s\n' "$GROUP_ID"

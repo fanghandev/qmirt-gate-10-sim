@@ -17,6 +17,7 @@ PORT="${MONITOR_PORT:-8765}"
 INTERVAL_S="${MONITOR_INTERVAL_S:-30}"
 DATA_ROOT="${MONITOR_DATA_ROOT:-/data/fanghan/opengate_sim/data}"
 CARDIAC_SUBDIR="${MONITOR_CARDIAC_SUBDIR:-cardiac_spect}"
+CARDIAC_CAMPAIGN="${MONITOR_CARDIAC_CAMPAIGN:-}"
 
 # Brain SPECT reads straight off the Expanse sshfs mount: run_spect_sim_slurm.sh
 # --auto-report already regenerates progress.json on the login node every
@@ -29,9 +30,16 @@ mkdir -p "$CARDIAC_ROOT"
 echo "Brain campaigns:   newest batch under $BRAIN_MOUNT_ROOT (Expanse mount)"
 echo "Cardiac campaigns: newest batch under $CARDIAC_ROOT"
 
-exec python3 "$REPO_ROOT/monitor/serve_monitor.py" \
-    --host "$HOST" \
-    --port "$PORT" \
-    --interval-s "$INTERVAL_S" \
-    --campaign-root "Brain SPECT (Expanse)=${BRAIN_MOUNT_ROOT}" \
-    --campaign-root "Cardiac SPECT (OSPool)=${CARDIAC_ROOT}"
+monitor_args=(
+    --host "$HOST"
+    --port "$PORT"
+    --interval-s "$INTERVAL_S"
+    --campaign-root "Brain SPECT (Expanse)=$BRAIN_MOUNT_ROOT"
+    --campaign-root "Cardiac SPECT (OSPool)=$CARDIAC_ROOT"
+)
+if [[ -n "$CARDIAC_CAMPAIGN" ]]; then
+    monitor_args+=(--campaign "Cardiac benchmark=$CARDIAC_CAMPAIGN/progress.json")
+    echo "Cardiac benchmark: $CARDIAC_CAMPAIGN"
+fi
+
+exec python3 "$REPO_ROOT/monitor/serve_monitor.py" "${monitor_args[@]}"

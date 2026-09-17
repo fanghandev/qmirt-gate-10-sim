@@ -23,7 +23,10 @@ RESOLUTIONS_MM="1,1.5,2"
 NUM_HEADS="80"
 PIXELS_PER_HEAD="625"
 SHARD_COUNT="16"
-SHARD_WORKERS="${SHARD_WORKERS:-8}"
+SHARD_WORKERS="${SHARD_WORKERS:-32}"
+CONVERT_WORKERS="${CONVERT_WORKERS:-40}"
+MERGE_WORKERS="${MERGE_WORKERS:-20}"
+HEADS_PER_MERGE_WORKER="${HEADS_PER_MERGE_WORKER:-4}"
 MIN_INPUTS="1"
 EXPECTED_PARTIALS="0"
 CONDOR_CLUSTER_ID="${CONDOR_CLUSTER_ID:-}"
@@ -34,6 +37,7 @@ usage() {
     echo "Usage: $0 (--latest | --batch BATCH_ID | --source-dir DIR) [--local-dir DIR]"
     echo "          [--output-dir DIR] [--resolutions-mm 1,1.5,2] [--num-heads N]"
     echo "          [--pixels-per-head N] [--shard-count N] [--min-inputs N]"
+    echo "          [--convert-workers N] [--merge-workers N] [--heads-per-merge-worker N]"
     echo "          [--expected-partials N] [--no-extract] [--force]"
     echo ""
     echo "Reads srm_c_*_p_*.tar.gz from the OSPool mount (${OSPOOL_MOUNT}),"
@@ -56,6 +60,9 @@ while [[ $# -gt 0 ]]; do
         --num-heads) NUM_HEADS="$2"; shift 2 ;;
         --pixels-per-head) PIXELS_PER_HEAD="$2"; shift 2 ;;
         --shard-count) SHARD_COUNT="$2"; shift 2 ;;
+        --convert-workers) CONVERT_WORKERS="$2"; shift 2 ;;
+        --merge-workers) MERGE_WORKERS="$2"; shift 2 ;;
+        --heads-per-merge-worker) HEADS_PER_MERGE_WORKER="$2"; shift 2 ;;
         --min-inputs) MIN_INPUTS="$2"; shift 2 ;;
         --expected-partials) EXPECTED_PARTIALS="$2"; shift 2 ;;
         --no-extract) EXTRACT=0; shift ;;
@@ -98,6 +105,13 @@ if ! [[ "$SHARD_COUNT" =~ ^[1-9][0-9]*$ ]]; then
     echo "shard_count must be a positive integer" >&2
     exit 2
 fi
+for value_name in CONVERT_WORKERS MERGE_WORKERS HEADS_PER_MERGE_WORKER; do
+    value="${!value_name}"
+    if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
+        echo "${value_name,,} must be a positive integer" >&2
+        exit 2
+    fi
+done
 
 LOCAL_DIR="${LOCAL_DIR:-${LOCAL_ROOT}/${BATCH_ID}}"
 if [[ "$LOCAL_DIR" == "$OSPOOL_MOUNT"* ]]; then
@@ -201,22 +215,14 @@ if [[ "$PARTIAL_COUNT" -eq 0 ]]; then
     exit 0
 fi
 
-# Combining rereads every partial, so skip the work when no new ones arrived.
-STAMP_FILE="${LOCAL_DIR}/.last_combined_partials"
+# The parallel pipeline has its own marker so an old serial reducer marker cannot
+# suppress the first run of the new per-source cache.
+STAMP_FILE="${LOCAL_DIR}/.last_parallel_pipeline_partials"
 LAST_COUNT="$(cat "$STAMP_FILE" 2>/dev/null || echo 0)"
 if [[ "$FORCE" -eq 0 && "$PARTIAL_COUNT" == "$LAST_COUNT" ]] \
-    && compgen -G "${OUTPUT_DIR}/final_srm_*_head_*.npz" > /dev/null; then
+    && [[ -f "${OUTPUT_DIR}/parallel_pipeline_metadata.json" ]]; then
     echo "No new partials since the last combine (${LAST_COUNT}); skipping."
     write_report
-    exit 0
-fi
-
-# Combining rereads every partial, so skip the work when no new ones arrived.
-STAMP_FILE="${LOCAL_DIR}/.last_combined_partials"
-LAST_COUNT="$(cat "$STAMP_FILE" 2>/dev/null || echo 0)"
-if [[ "$FORCE" -eq 0 && "$PARTIAL_COUNT" == "$LAST_COUNT" ]] \
-    && compgen -G "${OUTPUT_DIR}/final_srm_*_head_*.npz" > /dev/null; then
-    echo "No new partials since the last combine (${LAST_COUNT}); skipping."
     exit 0
 fi
 
@@ -237,16 +243,16 @@ PY
 )"
 echo "Simulated primaries: ${SIMULATED_PRIMARIES}"
 
-python3 "$REPO_ROOT/payload/python/incremental_sparse_srm_aggregate.py" \
+python3 "$REPO_ROOT/payload/python/cardiac_parallel_srm_pipeline.py" \
     --input-dir "$PARTIAL_DIR" \
     --output-dir "$OUTPUT_DIR" \
-    --input-glob 'srm_c_*_{label}.npz' \
+    --state-dir "$OUTPUT_DIR/.incremental_srm_state" \
     --resolutions-mm "$RESOLUTIONS_MM" \
     --num-heads "$NUM_HEADS" \
     --pixels-per-head "$PIXELS_PER_HEAD" \
-    --shard-count "$SHARD_COUNT" \
-    --workers "$SHARD_WORKERS" \
-    --simulated-primaries "$SIMULATED_PRIMARIES"
+    --convert-workers "$CONVERT_WORKERS" \
+    --merge-workers "$MERGE_WORKERS" \
+    --group-size "$HEADS_PER_MERGE_WORKER"
 
 echo "Done. Per-head SRMs in $OUTPUT_DIR"
 printf '%s\n' "$PARTIAL_COUNT" > "$STAMP_FILE"
