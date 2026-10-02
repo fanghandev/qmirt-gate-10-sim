@@ -39,8 +39,10 @@ def load_campaign(path: str) -> dict | None:
     threads = int(manifest["cpus_per_task"])
     # per-task means (the benchmark uses one task; production campaigns have many)
     primaries, sim_s, n_tasks, wall_s = 0.0, 0.0, 0, []
-    progress = os.path.join(path, "cluster_progress.json")
-    if os.path.exists(progress):
+    # progress.json on Expanse; cluster_progress.json in copies pulled by Globus
+    progress = next((os.path.join(path, n) for n in ("progress.json", "cluster_progress.json")
+                     if os.path.exists(os.path.join(path, n))), "")
+    if progress:
         tasks = [t for t in json.load(open(progress)).get("per_task", []) if t.get("primaries")]
         n_tasks = len(tasks)
         primaries = sum(float(t["primaries"]) for t in tasks)
