@@ -15,8 +15,6 @@ Usage: python3 analyze_brain_shield_ab_benchmark.py <campaign dir> [<campaign di
        [--loop-minutes 45] [--time-limit-hours 24] [--fill 0.75]
 """
 
-from __future__ import annotations
-
 import argparse
 import glob
 import json
@@ -27,12 +25,12 @@ from collections import defaultdict
 EVENTS_PER_CHUNK_PER_THREAD = 6.25e6  # production activity x 1 s chunks
 
 
-def _duration_s(value: dict) -> float:
+def _duration_s(value):
     scale = {"s": 1.0, "ms": 1e-3, "min": 60.0, "h": 3600.0}
     return float(value["value"]) * scale.get(value.get("unit", "s"), 1.0)
 
 
-def load_campaign(path: str) -> dict | None:
+def load_campaign(path):  # plain hints: Expanse has Python 3.6
     manifest_path = os.path.join(path, "campaign_manifest.json")
     if not os.path.exists(manifest_path):
         print(f"skip {path}: no campaign_manifest.json")
@@ -76,7 +74,7 @@ def load_campaign(path: str) -> dict | None:
     }
 
 
-def main() -> int:
+def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("campaign_dirs", nargs="+")
     ap.add_argument("--loop-minutes", type=float, default=45.0,
