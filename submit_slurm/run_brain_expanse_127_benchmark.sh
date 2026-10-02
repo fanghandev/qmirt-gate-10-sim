@@ -10,6 +10,22 @@ PROJECT_DIR="${PROJECT_DIR:-/expanse/lustre/projects/mgh102/${USER}}"
 PARTITION="${PARTITION:-shared}"
 JOB_COUNT="${JOB_COUNT:-1}"
 TIME_LIMIT="${TIME_LIMIT:-02:00:00}"
+SRM_FOV_SIZE_MM="${SRM_FOV_SIZE_MM:-288}"
+# What to benchmark (see launch_brain_expanse_shield_ab_benchmark.sh for the A/B set):
+# ACTOR_LAYOUT merged|per-head, SHIELD_MODEL csg|pieces|stl (pieces needs
+# SHIELD_PIECES_DIR). Production activity per thread; one loop of NUM_CHUNKS 1 s
+# chunks. Two NUM_CHUNKS values give the cost per primary as a slope.
+export ACTOR_LAYOUT="${ACTOR_LAYOUT:-merged}"
+export SHIELD_MODEL="${SHIELD_MODEL:-csg}"
+export SHIELD_PIECES_DIR="${SHIELD_PIECES_DIR:-}"
+export CHECK_OVERLAPS="${CHECK_OVERLAPS:-0}"
+SOURCE_ACTIVITY_BQ="${SOURCE_ACTIVITY_BQ:-6.25e6}"
+NUM_CHUNKS="${NUM_CHUNKS:-4}"
+AUTO_REPORT_ARGS=(--auto-report --report-interval-s 60 --report-partition shared
+                  --report-cpus 1 --report-mem-gb 2 --report-time-limit "${TIME_LIMIT}")
+if [[ "${AUTO_REPORT:-1}" != "1" ]]; then
+    AUTO_REPORT_ARGS=()
+fi
 
 if [[ "$(hostname -s)" != login* ]]; then
     echo "Run this from an Expanse login node." >&2
@@ -25,7 +41,7 @@ case "$PARTITION" in
         ;;
 esac
 
-# One loop targets ~1.3e9 primaries, expected to take approximately 30 minutes.
+# One loop of NUM_CHUNKS x SOURCE_ACTIVITY_BQ x 1 s x CPUS_PER_TASK primaries.
 exec bash "${REPO_ROOT}/submit_slurm/run_spect_sim_slurm.sh" brain \
     --cluster expanse \
     --account "${ACCOUNT}" \
@@ -36,17 +52,12 @@ exec bash "${REPO_ROOT}/submit_slurm/run_spect_sim_slurm.sh" brain \
     --cpus-per-task "${CPUS_PER_TASK}" \
     --mem-gb 220 \
     --time-limit "${TIME_LIMIT}" \
-    --source-activity-bq 1e6 \
+    --source-activity-bq "${SOURCE_ACTIVITY_BQ}" \
     --chunk-duration-s 1 \
-    --num-chunks 10 \
+    --num-chunks "${NUM_CHUNKS}" \
     --num-loops 1 \
     --sparse-srm \
-    --srm-fov-size-mm 210 \
+    --srm-fov-size-mm "${SRM_FOV_SIZE_MM}" \
     --profile-resources \
     --profile-interval-s 5 \
-    --auto-report \
-    --report-interval-s 60 \
-    --report-partition shared \
-    --report-cpus 1 \
-    --report-mem-gb 2 \
-    --report-time-limit 02:00:00
+    "${AUTO_REPORT_ARGS[@]}"

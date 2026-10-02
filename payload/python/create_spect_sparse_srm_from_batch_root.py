@@ -16,6 +16,10 @@ import uproot
 
 COORDINATE_COLUMNS = ["crystal", "pixel", "x", "y", "z"]
 TREE_PATTERN = re.compile(r"^Pixel_(\d+)_Singles$")
+# One tree for all heads (gate_sim_brain_spect_boolean.py --actor-layout merged);
+# the 1-based head is read from PreStepUniqueVolumeID "pixel_<head>_param-...".
+MERGED_TREE = "Singles"
+MERGED_HEAD_PATTERN = r"^pixel_(\d+)_param"
 BRANCHES = [
     "PreStepUniqueVolumeID",
     "TotalEnergyDeposit",
@@ -147,18 +151,25 @@ def validate_grid(fov_size_mm: float, resolutions_mm: list[float]) -> dict[float
     return grid_sizes
 
 
-def get_tree_names(root_file: Any) -> list[tuple[str, int]]:
-    trees = []
+def get_tree_names(root_file: Any) -> list[tuple[str, int | None]]:
+    """Singles trees with their 0-based head, or None for the merged tree."""
+    trees: list[tuple[str, int | None]] = []
     for name, class_name in root_file.classnames(cycle=False).items():
+        if class_name != "TTree":
+            continue
         match = TREE_PATTERN.fullmatch(name)
-        if class_name == "TTree" and match is not None:
+        if match is not None:
             trees.append((name, int(match.group(1)) - 1))
-    return sorted(trees, key=lambda item: item[1])
+        elif name == MERGED_TREE:
+            trees.append((name, None))
+    if any(head is None for _, head in trees) and len(trees) > 1:
+        raise ValueError("ROOT file holds both merged and per-head singles trees")
+    return sorted(trees, key=lambda item: -1 if item[1] is None else item[1])
 
 
 def histogram_chunk(
     data: dict[str, np.ndarray],
-    crystal_id: int,
+    crystal_id: int | None,
     resolutions_mm: list[float],
     grid_sizes: dict[float, int],
     fov_size_mm: float,
@@ -181,7 +192,15 @@ def histogram_chunk(
             }
         )
         .with_columns(
-            pl.lit(crystal_id, dtype=pl.Int32).alias("crystal"),
+            (
+                pl.lit(crystal_id, dtype=pl.Int32)
+                if crystal_id is not None
+                else pl.col("volume_id")
+                .cast(pl.String)
+                .str.extract(MERGED_HEAD_PATTERN, 1)
+                .cast(pl.Int32, strict=False)
+                - 1
+            ).alias("crystal"),
             pl.col("volume_id")
             .cast(pl.String)
             .str.extract(r"_(\d+)$", 1)
@@ -192,6 +211,7 @@ def histogram_chunk(
             pl.col("energy_mev").is_between(
                 energy_min_mev, energy_max_mev, closed="both"
             )
+            & pl.col("crystal").is_not_null()
             & pl.col("pixel").is_not_null()
             & pl.col("pixel").is_between(0, pixels_per_head - 1, closed="both")
         )

@@ -229,37 +229,52 @@ def add_collimator_to_gate_sim(
     collimator = construct_collimator_geometry(config, id)
     sim.volume_manager.add_volume(collimator)
     collimator.mother = "world"
+    collimator.rotation = get_head_rotation_matrix(pl_df, id)
 
-    # Extract the pinhole locations directly from the DataFrame
-    px = pl_df.item(id, "Pinhole_x")
-    py = pl_df.item(id, "Pinhole_y")
-    pz = pl_df.item(id, "Pinhole_z")
+    collimator.translation = get_collimator_center(config, pl_df, id).tolist()
 
-    # Assign the translation as a standard 3-element list
-    collimator.translation = [px, py, pz]
+    collimator.name = f"Collimator_{id + 1}"
+    collimator.material = "Tungsten"
 
-    r = get_head_rotation_matrix(pl_df, id)
-    collimator.rotation = r
 
-    # 3. Define the local offset of the inherent center relative to the pinhole
+def get_collimator_center(config: dict, pl_df: pl.DataFrame, id: int) -> np.ndarray:
+    """World position of the collimator volume's origin (Frustum_A's centre).
+
+    The pinhole sits (h_body - h_nozzle) / 2 above that origin along the local z
+    axis, so shift the pinhole back by the rotated offset.
+    """
+    pinhole = np.array(
+        [pl_df.item(id, f"Pinhole_{axis}") for axis in ("x", "y", "z")]
+    )
     z_offset = (
         config["collimator definition"]["h_nozzle"]
         - config["collimator definition"]["h_body"]
     ) * 0.5
-    local_offset_vector = np.array([0.0, 0.0, z_offset])
+    local_offset = np.array([0.0, 0.0, z_offset])
+    return pinhole + get_head_rotation_matrix(pl_df, id) @ local_offset
 
-    # 4. Rotate the local offset into global space
-    global_offset_vector = r @ local_offset_vector
 
-    # 5. Apply the final corrected translation
-    collimator.translation = [
-        px + global_offset_vector[0],
-        py + global_offset_vector[1],
-        pz + global_offset_vector[2],
+def get_collimator_outer_primitives(config: dict) -> list[dict]:
+    """Outer envelope of construct_collimator_geometry as Geant4 primitives in the
+    collimator's local frame (bore subtractions omitted): Frustum_A plus Box_A.
+    Trd values are G4Trd half-lengths (dx1/dy1 at -dz, dx2/dy2 at +dz)."""
+    c = config["collimator definition"]
+    return [
+        {
+            "type": "trd",
+            "dx1": c["l_bottom_outer"] * 0.5,
+            "dy1": c["l_bottom_outer"] * 0.5,
+            "dx2": c["l_top"] * 0.5,
+            "dy2": c["l_top"] * 0.5,
+            "dz": (c["h_nozzle"] + c["h_body"]) * 0.5,
+            "offset_mm": [0.0, 0.0, 0.0],
+        },
+        {
+            "type": "box",
+            "size_mm": [c["l_bottom_outer"], c["l_bottom_outer"], c["h_box"]],
+            "offset_mm": [0.0, 0.0, -0.5 * (c["h_nozzle"] + c["h_body"] + c["h_box"])],
+        },
     ]
-
-    collimator.name = f"Collimator_{id + 1}"
-    collimator.material = "Tungsten"
 
 
 def add_crystal_box(sim: gate.Simulation, name: str):
@@ -314,10 +329,38 @@ def add_shielding_to_gate_sim(sim: gate.Simulation, config: dict):
     shielding.file_name = Path(config["shielding file path"]).as_posix()
     shielding.origin_at_cog = False
     sim.add_volume(shielding)
+    shielding.rotation = get_shielding_rotation_matrix()
+    shielding.material = "Lead"
+
+
+def add_shield_pieces_to_gate_sim(sim: gate.Simulation, pieces_dir: str | Path):
+    """Shield as closed STL pieces cut from the original by split_brain_shield_stl.py.
+
+    Same solid, but each piece has a small bounding box, so Geant4 only consults
+    the pieces near a photon. Pieces are stored in world coordinates.
+    """
+    import json
+
+    pieces_dir = Path(pieces_dir)
+    manifest = json.loads((pieces_dir / "manifest.json").read_text())
+    for record in manifest["pieces"]:
+        piece_path = pieces_dir / record["file"]
+        if not piece_path.exists():
+            raise FileNotFoundError(f"Shield piece STL not found at: {piece_path}")
+        piece = gate.geometry.volumes.TesselatedVolume(
+            name=f"Shielding_{Path(record['file']).stem}"
+        )
+        piece.mother = "world"
+        piece.file_name = piece_path.as_posix()
+        piece.origin_at_cog = False
+        sim.add_volume(piece)
+        piece.material = "Lead"
+
+
+def get_shielding_rotation_matrix() -> np.ndarray:
     rx = Rotation.from_euler("x", -90, degrees=True).as_matrix()
     rz = Rotation.from_euler("z", 180, degrees=True).as_matrix()
-    shielding.rotation = rx @ rz
-    shielding.material = "Lead"
+    return rx @ rz
 
 
 def map_crystal_id(id: int, n_crystals: int, mode: str) -> int:
@@ -346,8 +389,34 @@ def map_crystal_id(id: int, n_crystals: int, mode: str) -> int:
     return mapped_id
 
 
+def check_fov_clears_collimators(pl_df: pl.DataFrame, shape: str, size_mm: float):
+    """Refuse an FOV volume that would overlap a collimator nozzle tip.
+
+    The nozzle tips are the hardware closest to the centre (the lead shield's inner
+    surface is at r = 145 mm), so the FOV's farthest point must stay inside them.
+    """
+    pinhole_r = np.sqrt(
+        pl_df["Pinhole_x"] ** 2 + pl_df["Pinhole_y"] ** 2 + pl_df["Pinhole_z"] ** 2
+    ).to_numpy()
+    # Longest nozzle of any variant, so this holds for every mapping mode.
+    h_nozzle = max(
+        get_geometry_base_definition(v)["collimator definition"]["h_nozzle"]
+        for v in range(4)
+    )
+    tip_r = float(np.min(pinhole_r) - h_nozzle)
+    shape_name = str(shape).lower()
+    fov_r = 0.5 * float(size_mm) * (np.sqrt(3.0) if shape_name == "box" else 1.0)
+    if fov_r >= tip_r:
+        raise ValueError(
+            f"FOV {shape_name} of size {size_mm} mm reaches r = {fov_r:.2f} mm, which "
+            f"overlaps the collimator nozzle tips at r = {tip_r:.2f} mm "
+            f"(max sphere diameter {2 * tip_r:.2f} mm)."
+        )
+
+
 def add_geometry_to_gate_sim(sim: gate.Simulation, pl_df: pl.DataFrame, args):
     n_crystals = pl_df.shape[0]
+    check_fov_clears_collimators(pl_df, args.fov_shape, args.fov_size_mm)
     for id in range(n_crystals):
         mapped_id = map_crystal_id(id, n_crystals, args.mapping_mode)
         config = get_geometry_base_definition(mapped_id)
@@ -357,7 +426,31 @@ def add_geometry_to_gate_sim(sim: gate.Simulation, pl_df: pl.DataFrame, args):
         add_pixelated_detector_to_gate_sim(sim, config, pl_df, id)
     add_fov_volume_to_gate_sim(sim, shape=args.fov_shape, size_mm=args.fov_size_mm)
     if args.with_shielding:
-        add_shielding_to_gate_sim(sim, config)
+        model = resolve_shield_model(args)
+        if model == "csg":
+            from brain_spect_shield_csg import add_csg_shield_to_gate_sim
+
+            add_csg_shield_to_gate_sim(sim, pl_df, layout="tiles")
+        elif model == "pieces":
+            add_shield_pieces_to_gate_sim(sim, args.shield_pieces_dir)
+        else:
+            add_shielding_to_gate_sim(sim, config)
+
+
+def resolve_shield_model(args) -> str:
+    """'stl' (the 186,772-facet STL), 'pieces' (STL pieces from --shield-pieces-dir,
+    e.g. the 0.05 mm simplified shield) or 'csg' (analytic G4Sphere tiles minus the
+    apertures, brain_spect_shield_csg.py; ~3x faster than the simplified STL and
+    within 0.1% of the STL's crystal counts, see dev/python/brain_shield_csg.md)."""
+    model = getattr(args, "shield_model", "stl") or "stl"
+    pieces_dir = getattr(args, "shield_pieces_dir", None)
+    if model == "stl" and pieces_dir:
+        model = "pieces"  # backward compatible: --shield-pieces-dir alone
+    if model == "pieces" and not pieces_dir:
+        raise ValueError("--shield-model pieces needs --shield-pieces-dir")
+    if model == "csg" and pieces_dir:
+        raise ValueError("--shield-pieces-dir cannot be combined with --shield-model csg")
+    return model
 
 
 def run_simulation_with_geometry_only(args):
@@ -506,6 +599,55 @@ def write_run_manifest(
     )
 
 
+HIT_ATTRIBUTES = [
+    "RunID",
+    "EventID",
+    "TotalEnergyDeposit",
+    "PostPosition",
+    "PrePosition",
+    "EventPosition",
+    "GlobalTime",
+    "PreStepUniqueVolumeID",
+    "PreStepUniqueVolumeIDAsInt",
+]
+MERGED_SINGLES_TREE = "Singles"
+
+
+def add_digitizer_chain(
+    sim: gate.Simulation,
+    pixel_volumes: str | list[str],
+    names: tuple[str, str, str],
+    singles_root_path: Path,
+    blur_fwhm_kev: float,
+):
+    """Hits -> readout -> Gaussian energy blur; the blur actor's name is the tree."""
+    hits_name, readout_name, singles_name = names
+    # Keep hits in-memory only as input to the singles chain.
+    hits_actor: gate.actors.digitizers.DigitizerHitsCollectionActor = sim.add_actor(
+        "DigitizerHitsCollectionActor", hits_name
+    )
+    hits_actor.attached_to = pixel_volumes
+    hits_actor.output_filename = ""
+    hits_actor.attributes = HIT_ATTRIBUTES
+    readout_actor = sim.add_actor("DigitizerReadoutActor", readout_name)
+    readout_actor.input_digi_collection = hits_actor.name
+    # Discretization works by tree depth, which is the same for every head, so
+    # any pixel volume serves; hits are grouped per pixel (unique volume ID).
+    first_volume = pixel_volumes if isinstance(pixel_volumes, str) else pixel_volumes[0]
+    readout_actor.discretize_volume = first_volume
+    readout_actor.policy = "EnergyWeightedCentroidPosition"
+    readout_actor.output_filename = ""
+    blur_actor: gate.actors.digitizers.DigitizerBlurringActor = sim.add_actor(
+        "DigitizerBlurringActor", singles_name
+    )
+    blur_actor.attached_to = pixel_volumes
+    blur_actor.input_digi_collection = readout_actor.name
+    blur_actor.blur_attribute = "TotalEnergyDeposit"
+    blur_actor.blur_method = "Gaussian"
+    blur_actor.blur_fwhm = blur_fwhm_kev * gate.g4_units.keV
+    blur_actor.output_filename = singles_root_path
+
+
 def add_actors(
     sim: gate.Simulation,
     n_crystals: int,
@@ -513,53 +655,40 @@ def add_actors(
     output_stem: str,
     energy_resolution: float = 0.10,
     energy_resolution_reference_kev: float = 140.0,
+    layout: str = "merged",
 ):
+    """Singles digitizer for all heads.
+
+    layout="merged": one chain over all pixel volumes writing one "Singles" tree;
+    the head is in PreStepUniqueVolumeID ("pixel_<head>_param-..."). Every actor
+    has a fixed per-event cost, so this is much cheaper than 73 chains.
+    layout="per-head": the original 73 chains writing "Pixel_<head>_Singles" trees.
+    """
     pixel_array_name = [f"pixel_{i + 1}" for i in range(n_crystals)]
     if energy_resolution < 0:
         raise ValueError("energy_resolution must be >= 0")
     blur_fwhm_kev = energy_resolution * energy_resolution_reference_kev
     singles_root_path = output_dir / f"pixel_singles_{output_stem}.root"
 
-    # Keep hits in-memory only as input to the singles chain.
-    for i in range(n_crystals):
-        pixel_hits_actor: gate.actors.digitizers.DigitizerHitsCollectionActor = (
-            sim.add_actor("DigitizerHitsCollectionActor", f"PixelHits_{i + 1}")
+    if layout == "merged":
+        add_digitizer_chain(
+            sim,
+            pixel_array_name,
+            ("PixelHits", "PixelReadout", MERGED_SINGLES_TREE),
+            singles_root_path,
+            blur_fwhm_kev,
         )
-        pixel_hits_actor.attached_to = pixel_array_name[i]
-        pixel_hits_actor.output_filename = ""
-        pixel_hits_actor.attributes = [
-            "RunID",
-            # "ThreadID",
-            "EventID",
-            # "TrackID",
-            "TotalEnergyDeposit",
-            "PostPosition",
-            "PrePosition",
-            "EventPosition",
-            "GlobalTime",
-            "PreStepUniqueVolumeID",
-            "PreStepUniqueVolumeIDAsInt",
-        ]
-        pixel_readout_actor = sim.add_actor(
-            "DigitizerReadoutActor", f"Pixel_{i + 1}_Readout"
-        )
-        pixel_readout_actor.input_digi_collection = pixel_hits_actor.name
-        # pixel_readout_actor.group_volume = pixel_array_name[i]
-        pixel_readout_actor.discretize_volume = pixel_array_name[i]
-        pixel_readout_actor.policy = "EnergyWeightedCentroidPosition"
-        pixel_readout_actor.output_filename = ""
-
-        # Named "Pixel_N_Singles" so the ROOT tree names stay stable for the
-        # downstream SRM builders.
-        pixel_blur_actor: gate.actors.digitizers.DigitizerBlurringActor = sim.add_actor(
-            "DigitizerBlurringActor", f"Pixel_{i + 1}_Singles"
-        )
-        pixel_blur_actor.attached_to = pixel_array_name[i]
-        pixel_blur_actor.input_digi_collection = pixel_readout_actor.name
-        pixel_blur_actor.blur_attribute = "TotalEnergyDeposit"
-        pixel_blur_actor.blur_method = "Gaussian"
-        pixel_blur_actor.blur_fwhm = blur_fwhm_kev * gate.g4_units.keV
-        pixel_blur_actor.output_filename = singles_root_path
+    elif layout == "per-head":
+        for i in range(n_crystals):
+            add_digitizer_chain(
+                sim,
+                pixel_array_name[i],
+                (f"PixelHits_{i + 1}", f"Pixel_{i + 1}_Readout", f"Pixel_{i + 1}_Singles"),
+                singles_root_path,
+                blur_fwhm_kev,
+            )
+    else:
+        raise ValueError(f"Unsupported actor layout: {layout!r}")
 
 
 def configure_chunked_run_timing(sim: gate.Simulation, args):
@@ -634,6 +763,9 @@ def run_simulation(
 
     sim = gate.Simulation(progress_bar=True, output_dir=output_dir)
     sim.random_seed = unique_seed
+    # Geant4's overlap check runs by default and repeats in every loop; check once
+    # per geometry change instead (--check-overlaps)
+    sim.check_volumes_overlap = bool(getattr(args, "check_overlaps", False))
     sim.volume_manager.add_material_database(persist_data_dir / "GateMaterials.db")
     print(f"Using GateMaterials.db from {persist_data_dir}")
     # Add Geometry to the simulation
@@ -663,6 +795,7 @@ def run_simulation(
         output_stem,
         energy_resolution=args.energy_resolution,
         energy_resolution_reference_kev=args.energy_resolution_reference_kev,
+        layout=args.actor_layout,
     )
     add_stats_actor(sim, output_dir, output_stem)
     write_run_manifest(output_dir, output_stem, args, unique_seed)
@@ -791,6 +924,35 @@ def parse_arguments():
         type=float,
         default=140.0,
         help="Reference energy in keV at which --energy-resolution is specified.",
+    )
+
+    parser.add_argument(
+        "--shield-model",
+        type=str,
+        choices=["stl", "pieces", "csg"],
+        default="stl",
+        help="Shield geometry: the STL, STL pieces (--shield-pieces-dir) or the "
+        "analytic CSG tiles (fastest).",
+    )
+    parser.add_argument(
+        "--check-overlaps",
+        action="store_true",
+        help="Run Geant4's volume overlap check (slow; for validation runs).",
+    )
+    parser.add_argument(
+        "--shield-pieces-dir",
+        type=str,
+        default=None,
+        help="Directory of shield pieces from dev/python/split_brain_shield_stl.py "
+        "(manifest.json + STLs) to use instead of the single shield STL.",
+    )
+    parser.add_argument(
+        "--actor-layout",
+        type=str,
+        choices=["merged", "per-head"],
+        default="merged",
+        help="Singles digitizer: one chain for all heads writing a 'Singles' tree "
+        "(default, much faster) or one chain per head writing 'Pixel_<N>_Singles'.",
     )
 
     return parser.parse_args()

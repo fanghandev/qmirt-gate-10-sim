@@ -23,6 +23,10 @@ NUM_CHUNKS="${NUM_CHUNKS:-1}"
 NUM_LOOPS="${NUM_LOOPS:-1}"
 SPARSE_SRM="${SPARSE_SRM:-0}"
 SRM_FOV_SIZE_MM="${SRM_FOV_SIZE_MM:-210}"
+ACTOR_LAYOUT="${ACTOR_LAYOUT:-merged}"
+SHIELD_PIECES_DIR="${SHIELD_PIECES_DIR:-}"
+SHIELD_MODEL="${SHIELD_MODEL:-}"
+CHECK_OVERLAPS="${CHECK_OVERLAPS:-0}"
 PROFILE_RESOURCES="${PROFILE_RESOURCES:-1}"
 PROFILE_INTERVAL_S="${PROFILE_INTERVAL_S:-5}"
 COMBINE_AFTER=0
@@ -468,6 +472,10 @@ export NUM_CHUNKS="${NUM_CHUNKS}"
 export NUM_LOOPS="${NUM_LOOPS}"
 export SPARSE_SRM="${SPARSE_SRM}"
 export SRM_FOV_SIZE_MM="${SRM_FOV_SIZE_MM}"
+export ACTOR_LAYOUT="${ACTOR_LAYOUT}"
+export SHIELD_PIECES_DIR="${SHIELD_PIECES_DIR}"
+export SHIELD_MODEL="${SHIELD_MODEL}"
+export CHECK_OVERLAPS="${CHECK_OVERLAPS}"
 export MAX_TASK_SECONDS="${MAX_TASK_SECONDS:-0}"
 export PROFILE_RESOURCES="${PROFILE_RESOURCES}"
 export PROFILE_INTERVAL_S="${PROFILE_INTERVAL_S}"
@@ -592,6 +600,10 @@ cat > "$MANIFEST_FILE" <<EOF
     "geometry_provenance_file": "geometry_provenance.json",
   "sparse_srm": ${SPARSE_SRM},
   "srm_fov_size_mm": ${SRM_FOV_SIZE_MM},
+  "actor_layout": "${ACTOR_LAYOUT}",
+  "shield_pieces_dir": "${SHIELD_PIECES_DIR}",
+  "shield_model": "${SHIELD_MODEL:-$([[ -n "$SHIELD_PIECES_DIR" ]] && echo pieces || echo stl)}",
+  "check_overlaps": ${CHECK_OVERLAPS},
   "profile_resources": ${PROFILE_RESOURCES},
   "profile_interval_s": ${PROFILE_INTERVAL_S},
   "combine_after": ${COMBINE_AFTER},

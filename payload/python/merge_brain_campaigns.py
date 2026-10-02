@@ -222,9 +222,26 @@ def merge_resolution_metadata(
         "accumulated_counts": sum(
             entry["accumulated_counts"] for entry in head_metadata
         ),
+        "accepted_events": sum(entry["accumulated_counts"] for entry in head_metadata),
         "simulated_primaries": summed("simulated_primaries"),
         "source_files": source_files,
     }
+
+
+def task_grid_size(task_ids: list[int], data_dir: str, resolution_stem: str) -> int:
+    """Grid size shared by every task's SRM; refuse to mix FOVs or voxel sizes."""
+    grid_sizes = set()
+    for task_id in task_ids:
+        srm_path = os.path.join(
+            data_dir, f"task_{task_id}", f"final_srm_{resolution_stem}.npz"
+        )
+        with np.load(srm_path) as data:
+            grid_sizes.add(int(data["grid_size"][0]))
+    if len(grid_sizes) != 1:
+        raise ValueError(
+            f"Tasks disagree on the {resolution_stem} grid size: {sorted(grid_sizes)}"
+        )
+    return grid_sizes.pop()
 
 
 def get_parser_args():
@@ -256,8 +273,19 @@ def main():
     print(f"Find {len(valid_task_ids)} valid task IDs")
 
     resolution_name_stems = ["1mm", "1p5mm", "2mm"]
-    grid_sizes = [210, 140, 105]
-    metadata = {"layout": "per_head_csr", "resolutions": {}}
+    grid_sizes = [
+        task_grid_size(valid_task_ids, directory, stem) for stem in resolution_name_stems
+    ]
+    print(f"Grid sizes: {dict(zip(resolution_name_stems, grid_sizes))}")
+    metadata = {
+        "layout": "per_head_csr",
+        "input_count": 0,
+        "simulated_primaries": 0,
+        "raw_events": 0,
+        "accepted_events": 0,
+        "partial_counts": {},
+        "resolutions": {},
+    }
     for resolution_id, (resolution_stem, grid_size) in enumerate(
         zip(resolution_name_stems, grid_sizes)
     ):
@@ -281,6 +309,16 @@ def main():
             n_pixels=args.pixels,
             grid_size=grid_size,
         )
+        resolution_metadata = metadata["resolutions"][resolution_stem]
+        metadata["partial_counts"][resolution_stem] = int(
+            resolution_metadata["accumulated_counts"]
+        )
+        metadata["accepted_events"] = int(resolution_metadata["accepted_events"])
+        metadata["simulated_primaries"] = int(
+            resolution_metadata["simulated_primaries"]
+        )
+        metadata["input_count"] = len(valid_task_ids)
+        resolution_metadata["input_count"] = len(valid_task_ids)
         print(f"Wrote {args.heads} {resolution_stem} per-head SRMs to {output_dir}")
 
     with open(os.path.join(output_dir, "combined_srm_metadata.json"), "w") as handle:

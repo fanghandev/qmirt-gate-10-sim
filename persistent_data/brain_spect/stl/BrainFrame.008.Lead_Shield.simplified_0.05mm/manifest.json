@@ -1,0 +1,30 @@
+{
+  "source_stl": "BrainFrame.008.Lead_Shield.STL",
+  "source_sha256": "815a176aaa9bb508ae9771ab09d691d4f846023b3b85105634522bc5ad32c166",
+  "frame": "world (Gate shielding rotation applied); place with identity rotation",
+  "n_az": 1,
+  "n_z": 1,
+  "simplify_tol_mm": 0.05,
+  "source_volume_mm3": 1721622.1321897635,
+  "pieces_volume_mm3": 1721709.8847045293,
+  "volume_relative_difference": 5.097083333516217e-05,
+  "source_triangles": 186772,
+  "pieces_triangles": 43258,
+  "pieces": [
+    {
+      "file": "piece_000_z0_az00.stl",
+      "z_slab": 0,
+      "az_sector": 0,
+      "triangles": 43258,
+      "volume_mm3": 1721709.8847045293,
+      "bbox_mm": [
+        -154.90159606933594,
+        -154.91500854492188,
+        -113.35982513427737,
+        154.90159606933594,
+        154.91500854492188,
+        154.02157592773438
+      ]
+    }
+  ]
+}

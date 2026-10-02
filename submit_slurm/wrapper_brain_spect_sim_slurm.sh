@@ -116,6 +116,31 @@ else
     APPTAINER_CMD=()
 fi
 
+# Shield geometry (SHIELD_MODEL): stl (the 186,772-facet STL), pieces (STL pieces
+# in SHIELD_PIECES_DIR, relative to the repo root, e.g. the 0.05 mm simplified
+# shield) or csg (analytic tiles, fastest; dev/python/brain_shield_csg.md).
+# A pieces dir without SHIELD_MODEL keeps the old behaviour (pieces).
+SHIELD_MODEL="${SHIELD_MODEL:-}"
+if [[ -z "$SHIELD_MODEL" ]]; then
+    SHIELD_MODEL=$([[ -n "${SHIELD_PIECES_DIR:-}" ]] && echo pieces || echo stl)
+fi
+SHIELD_ARGS=(--shield-model "$SHIELD_MODEL")
+case "$SHIELD_MODEL" in
+    pieces)
+        if [[ ! -f "$REPO_ROOT/${SHIELD_PIECES_DIR:-}/manifest.json" ]]; then
+            echo "Error: SHIELD_MODEL=pieces needs SHIELD_PIECES_DIR with a manifest.json" >&2
+            exit 1
+        fi
+        SHIELD_ARGS+=(--shield-pieces-dir "$REPO_ROOT/$SHIELD_PIECES_DIR")
+        ;;
+    stl|csg) ;;
+    *) echo "Error: SHIELD_MODEL must be stl, pieces or csg (got '$SHIELD_MODEL')" >&2; exit 1 ;;
+esac
+# Geant4's overlap check is off in production loops; CHECK_OVERLAPS=1 turns it on
+if [[ "${CHECK_OVERLAPS:-0}" == "1" ]]; then
+    SHIELD_ARGS+=(--check-overlaps)
+fi
+
 build_sim_command() {
     local output_dir="$1"
     local task_id="$2"
@@ -132,6 +157,10 @@ build_sim_command() {
             -s "$SOURCE_ACTIVITY_BQ"
             -d "$CHUNK_DURATION_S"
             -c "$NUM_CHUNKS"
+            --fov-shape sphere
+            --fov-size-mm "${SRM_FOV_SIZE_MM:-210}"
+            --actor-layout "${ACTOR_LAYOUT:-merged}"
+            "${SHIELD_ARGS[@]}"
         )
     else
         sim_cmd=(
@@ -145,6 +174,10 @@ build_sim_command() {
             -s "$SOURCE_ACTIVITY_BQ"
             -d "$CHUNK_DURATION_S"
             -c "$NUM_CHUNKS"
+            --fov-shape sphere
+            --fov-size-mm "${SRM_FOV_SIZE_MM:-210}"
+            --actor-layout "${ACTOR_LAYOUT:-merged}"
+            "${SHIELD_ARGS[@]}"
         )
     fi
 }
@@ -186,7 +219,11 @@ write_campaign_geometry_provenance() {
         "$REPO_ROOT/payload/python/write_brain_spect_geometry_provenance.py"
         --output "$CAMPAIGN_DIR/geometry_provenance.json"
         --fov-size-mm "$SRM_FOV_SIZE_MM"
+        --shield-model "$SHIELD_MODEL"
     )
+    if [[ "$SHIELD_MODEL" == "pieces" ]]; then
+        provenance_cmd+=(--shield-pieces-dir "$REPO_ROOT/$SHIELD_PIECES_DIR")
+    fi
     if [[ ${#APPTAINER_CMD[@]} -gt 0 ]]; then
         provenance_cmd=("${APPTAINER_CMD[@]}" "${provenance_cmd[@]}")
     fi
@@ -202,6 +239,9 @@ echo "Source activity: ${SOURCE_ACTIVITY_BQ} Bq"
 echo "Chunk duration: ${CHUNK_DURATION_S} s"
 echo "Num chunks: ${NUM_CHUNKS}"
 echo "Sparse SRM mode: ${SPARSE_SRM}"
+echo "Actor layout: ${ACTOR_LAYOUT:-merged}"
+echo "Shield model: ${SHIELD_MODEL}${SHIELD_PIECES_DIR:+ (pieces: $SHIELD_PIECES_DIR)}"
+echo "Overlap check: ${CHECK_OVERLAPS:-0}"
 echo "Num loops: ${NUM_LOOPS}"
 
 # Sole signal that a task's outputs are complete and safe for the workstation to pull.
