@@ -15,6 +15,8 @@ Usage: python3 analyze_brain_shield_ab_benchmark.py <campaign dir> [<campaign di
        [--loop-minutes 45] [--time-limit-hours 24] [--fill 0.75]
 """
 
+from __future__ import annotations
+
 import argparse
 import glob
 import json
