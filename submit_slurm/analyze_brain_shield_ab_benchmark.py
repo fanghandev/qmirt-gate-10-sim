@@ -50,10 +50,15 @@ def load_campaign(path):  # plain hints: Expanse has Python 3.6
     if primaries == 0:  # fall back to the per-loop Gate statistics files
         stats_files = glob.glob(os.path.join(path, "**", "*_sim_stats_loop_*.txt"), recursive=True)
         n_tasks = len({os.path.dirname(f) for f in stats_files})
+        # several files per loop when one Gate process runs per NUMA domain: the
+        # processes run in parallel, so a loop takes as long as its slowest one
+        loop_time = defaultdict(float)
         for stats in stats_files:
             d = json.load(open(stats))
             primaries += float(d["events"]["value"])
-            sim_s += _duration_s(d["duration"])
+            key = (os.path.dirname(stats), stats.rsplit("_sim_stats_loop_", 1)[1])
+            loop_time[key] = max(loop_time[key], _duration_s(d["duration"]))
+        sim_s = sum(loop_time.values())
     for wall in glob.glob(os.path.join(path, "**", "task_*_wall_time.txt"), recursive=True):
         m = re.search(r"wall_time_seconds:\s*([0-9.]+)", open(wall).read())
         if m:
@@ -66,6 +71,7 @@ def load_campaign(path):  # plain hints: Expanse has Python 3.6
         "path": path,
         "actor_layout": manifest.get("actor_layout", "per-head"),
         "shield_model": manifest.get("shield_model", "stl"),
+        "numa_split": manifest.get("numa_split", "off"),  # older manifests: one process
         "num_chunks": int(manifest["num_chunks"]),
         "threads": threads,
         "primaries": primaries / n_tasks,
@@ -88,15 +94,15 @@ def main():
     for path in args.campaign_dirs:
         c = load_campaign(path)
         if c:
-            groups[(c["actor_layout"], c["shield_model"])].append(c)
+            groups[(c["actor_layout"], c["shield_model"], c["numa_split"])].append(c)
 
-    print(f"{'actors':9s} {'shield':7s} {'us/primary/thread':>18s} {'fixed per loop (s)':>19s}"
+    print(f"{'actors':9s} {'shield':7s} {'numa':5s} {'us/primary/thread':>18s} {'fixed per loop (s)':>19s}"
           f" {'Gate-only us/primary/thread':>28s}")
     results = {}
     for key, runs in sorted(groups.items()):
         runs.sort(key=lambda c: c["primaries"])
         if len({c["num_chunks"] for c in runs}) < 2:
-            print(f"{key[0]:9s} {key[1]:7s} need two different NUM_CHUNKS ({len(runs)} run(s) found)")
+            print(f"{key[0]:9s} {key[1]:7s} {key[2]:5s} need two different NUM_CHUNKS ({len(runs)} run(s) found)")
             continue
         a, b = runs[0], runs[-1]
         per_thread = lambda c: c["primaries"] / c["threads"]  # noqa: E731
@@ -104,24 +110,28 @@ def main():
         fixed = a["wall_s"] - per_thread(a) * cost
         gate_cost = (b["simulation_s"] - a["simulation_s"]) / (per_thread(b) - per_thread(a))
         results[key] = (cost, fixed, b["threads"])
-        print(f"{key[0]:9s} {key[1]:7s} {cost * 1e6:18.2f} {fixed:19.0f} {gate_cost * 1e6:28.2f}")
+        print(f"{key[0]:9s} {key[1]:7s} {key[2]:5s} {cost * 1e6:18.2f} {fixed:19.0f} {gate_cost * 1e6:28.2f}")
 
-    if ("merged", "csg") in results:
-        cost, fixed, threads = results[("merged", "csg")]
+    production = next((k for k in (("merged", "csg", "auto"), ("merged", "csg", "off"))
+                       if k in results), None)
+    if production:
+        cost, fixed, threads = results[production]
         chunk_s = EVENTS_PER_CHUNK_PER_THREAD * cost
         chunks = max(1, round((args.loop_minutes * 60 - fixed) / chunk_s))
         loop_s = fixed + chunks * chunk_s
         loops = max(1, int(args.time_limit_hours * 3600 * args.fill // loop_s))
         su_per_loop = threads * loop_s / 3600
         primaries_per_loop = chunks * EVENTS_PER_CHUNK_PER_THREAD * threads
-        print(f"\nProduction recommendation (merged actors + CSG shield, {threads} threads):")
+        print(f"\nProduction recommendation (merged actors + CSG shield, NUMA split "
+              f"{production[2]}, {threads} threads):")
         print(f"  NUM_CHUNKS={chunks}  (loop ~{loop_s / 60:.0f} min, {primaries_per_loop:.3e} primaries)")
         print(f"  NUM_LOOPS={loops}    (task ~{loops * loop_s / 3600:.1f} h of a {args.time_limit_hours:.0f} h limit)")
         print(f"  SU_PER_LOOP={su_per_loop:.0f}")
         target = 1.016e14
         print(f"  full 288 mm target {target:.3e} primaries: ~{target / primaries_per_loop * su_per_loop:,.0f} SU")
-        if ("per-head", "stl") in results:
-            print(f"  speed-up vs the legacy setup: {results[('per-head', 'stl')][0] / cost:.1f}x")
+        legacy = results.get(("per-head", "stl", "off"))
+        if legacy:
+            print(f"  speed-up vs the legacy setup: {legacy[0] / cost:.1f}x")
     return 0
 
 

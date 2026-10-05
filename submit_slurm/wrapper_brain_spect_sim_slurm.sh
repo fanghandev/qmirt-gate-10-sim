@@ -39,6 +39,9 @@ export LOCAL_SCRATCH_ROOT="${LOCAL_SCRATCH_ROOT:-${SLURM_TMPDIR:-${TMPDIR:-$SCRA
 export MAX_TASK_SECONDS="${MAX_TASK_SECONDS:-0}"
 export PROFILE_RESOURCES="${PROFILE_RESOURCES:-1}"
 export PROFILE_INTERVAL_S="${PROFILE_INTERVAL_S:-5}"
+# Gate's Python messages (seed, START/STOP, progress) must reach the per-process
+# logs; buffered output written to a file is lost at exit.
+export PYTHONUNBUFFERED=1
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -141,9 +144,27 @@ if [[ "${CHECK_OVERLAPS:-0}" == "1" ]]; then
     SHIELD_ARGS+=(--check-overlaps)
 fi
 
+# One Gate process per NUMA domain (NUMA_SPLIT=auto|off|N; numa_layout.py). A single
+# process spread over the 8 NUMA domains of an Expanse node was 3.3x slower per node
+# than one pinned process per domain (dev/python/brain_shield_csg.md).
+NUMA_SPLIT="${NUMA_SPLIT:-auto}"
+NUMA_GROUPS=()
+if [[ "$NUMA_SPLIT" != "off" ]]; then
+    # run in the image like the simulation (it sees the host's /sys and CPU affinity)
+    mapfile -t NUMA_GROUPS < <("${APPTAINER_CMD[@]}" python3 "$SCRIPT_DIR/numa_layout.py" --split "$NUMA_SPLIT")
+    if (( ${#NUMA_GROUPS[@]} > 1 )) && ! command -v numactl >/dev/null 2>&1; then
+        echo "Warning: numactl not found; running one Gate process per loop." >&2
+        NUMA_GROUPS=()
+    fi
+    if (( ${#NUMA_GROUPS[@]} < 2 )); then
+        NUMA_GROUPS=()
+    fi
+fi
+
 build_sim_command() {
     local output_dir="$1"
     local task_id="$2"
+    local threads="${3:-${SLURM_CPUS_PER_TASK:-1}}"
     if [[ ${#APPTAINER_CMD[@]} -gt 0 ]]; then
         sim_cmd=(
             "${APPTAINER_CMD[@]}"
@@ -153,7 +174,7 @@ build_sim_command() {
             -j "$JOB_ID"
             -k "$task_id"
             --execution-environment slurm
-            -n "${SLURM_CPUS_PER_TASK:-1}"
+            -n "$threads"
             -s "$SOURCE_ACTIVITY_BQ"
             -d "$CHUNK_DURATION_S"
             -c "$NUM_CHUNKS"
@@ -170,7 +191,7 @@ build_sim_command() {
             -j "$JOB_ID"
             -k "$task_id"
             --execution-environment slurm
-            -n "${SLURM_CPUS_PER_TASK:-1}"
+            -n "$threads"
             -s "$SOURCE_ACTIVITY_BQ"
             -d "$CHUNK_DURATION_S"
             -c "$NUM_CHUNKS"
@@ -243,6 +264,12 @@ echo "Actor layout: ${ACTOR_LAYOUT:-merged}"
 echo "Shield model: ${SHIELD_MODEL}${SHIELD_PIECES_DIR:+ (pieces: $SHIELD_PIECES_DIR)}"
 echo "Overlap check: ${CHECK_OVERLAPS:-0}"
 echo "Num loops: ${NUM_LOOPS}"
+if (( ${#NUMA_GROUPS[@]} > 1 )); then
+    echo "NUMA split (${NUMA_SPLIT}): ${#NUMA_GROUPS[@]} Gate processes per loop (memory nodes, CPUs, threads):"
+    printf '    %s\n' "${NUMA_GROUPS[@]}"
+else
+    echo "NUMA split (${NUMA_SPLIT}): one Gate process per loop"
+fi
 
 # Sole signal that a task's outputs are complete and safe for the workstation to pull.
 write_task_complete_marker() {
@@ -277,6 +304,67 @@ write_task_complete_marker() {
     echo "Wrote completion marker: $marker"
 }
 
+# Build sim_cmd for one loop: a single Gate process, or one numactl-pinned Gate
+# process per NUMA group run by run_parallel_commands.sh (each with its own task id,
+# hence its own seed, output folder and log).
+build_loop_command() {
+    local loop_dir="$1"
+    local loop_task_id="$2"
+    if (( ${#NUMA_GROUPS[@]} < 2 )); then
+        build_sim_command "$loop_dir" "$loop_task_id"
+        return
+    fi
+    local command_file="${loop_dir}/parallel_commands.txt"
+    local index mem cpus count bind
+    : > "$command_file"
+    for index in "${!NUMA_GROUPS[@]}"; do
+        read -r mem cpus count <<<"${NUMA_GROUPS[$index]}"
+        build_sim_command "${loop_dir}/numa${index}" "${loop_task_id}_n${index}" "$count"
+        bind=(numactl "--physcpubind=${cpus}")
+        if [[ "$mem" != "-" ]]; then
+            bind+=("--membind=${mem}")
+        fi
+        mkdir -p "${loop_dir}/numa${index}"
+        printf '%q ' "${bind[@]}" "${sim_cmd[@]}" >> "$command_file"
+        printf '> %q 2>&1\n' "${loop_dir}/numa${index}.log" >> "$command_file"
+    done
+    sim_cmd=(bash "$SCRIPT_DIR/run_parallel_commands.sh" "$command_file")
+}
+
+# Per-process logs stay on node-local scratch; keep a short Geant4 warning summary
+# per loop and show the tail of any log after a failure.
+summarize_loop_logs() {
+    local loop_dir="$1"
+    local failed="$2"
+    local log
+    shopt -s nullglob
+    local logs=("$loop_dir"/numa*.log)
+    shopt -u nullglob
+    (( ${#logs[@]} )) || return 0
+    local warnings="${CHUNK_OUTPUT_DIR}/geant4_warnings_loop_${CURRENT_LOOP_ID}.txt"
+    for log in "${logs[@]}"; do
+        local n
+        n="$(grep -a -c "G4Exception-START" "$log" || true)"
+        if [[ "$n" -gt 0 ]]; then
+            {
+                echo "== $(basename "$log"): ${n} G4Exception(s)"
+                grep -a -A8 "G4Exception-START" "$log" | head -60
+            } >> "$warnings"
+        fi
+        if [[ "$failed" == "1" ]]; then
+            # node-local scratch is lost with the job: keep the log tails with the task
+            local keep="${CHUNK_OUTPUT_DIR}/failed_loop_${CURRENT_LOOP_ID}"
+            mkdir -p "$keep"
+            tr '\r' '\n' < "$log" | grep -av "^\s*$" | tail -n 200 > "${keep}/$(basename "$log")" || true
+            echo "---- last lines of $(basename "$log") ($(wc -c < "$log") bytes; tail kept in ${keep}) ----" >&2
+            tail -n 15 "${keep}/$(basename "$log")" >&2
+        fi
+    done
+    if [[ -f "$warnings" ]]; then
+        echo "Loop ${CURRENT_LOOP_ID}: Geant4 warnings summarized in ${warnings}"
+    fi
+}
+
 run_sparse_workflow() {
     completed_loops=0
     for ((loop_index = 0; loop_index < NUM_LOOPS; loop_index++)); do
@@ -285,7 +373,7 @@ run_sparse_workflow() {
         loop_srm_dir="${loop_dir}/srm"
         mkdir -p "$loop_dir"
 
-        build_sim_command "$loop_dir" "${TASK_ID}_loop_${CURRENT_LOOP_ID}"
+        build_loop_command "$loop_dir" "${TASK_ID}_loop_${CURRENT_LOOP_ID}"
         echo "Starting sparse SRM loop ${CURRENT_LOOP_ID}/${NUM_LOOPS}..."
         if [[ "$PROFILE_RESOURCES" == "1" ]]; then
             profile_cmd=(bash "$SCRIPT_DIR/profile_resources.sh" "$loop_dir" "$PROFILE_INTERVAL_S" "${sim_cmd[@]}")
@@ -295,16 +383,19 @@ run_sparse_workflow() {
         if [[ "$MAX_TASK_SECONDS" =~ ^[0-9]+$ ]] && [[ "$MAX_TASK_SECONDS" -gt 0 ]]; then
             if ! timeout --signal=TERM --kill-after=30 "$MAX_TASK_SECONDS" "${profile_cmd[@]}"; then
                 echo "Loop ${CURRENT_LOOP_ID} simulation failed; combining completed loops." >&2
+                summarize_loop_logs "$loop_dir" 1
                 rm -rf "$loop_dir"
                 break
             fi
         else
             if ! "${profile_cmd[@]}"; then
                 echo "Loop ${CURRENT_LOOP_ID} simulation failed; combining completed loops." >&2
+                summarize_loop_logs "$loop_dir" 1
                 rm -rf "$loop_dir"
                 break
             fi
         fi
+        summarize_loop_logs "$loop_dir" 0
 
         build_sparse_worker_command "$loop_dir" "$loop_srm_dir"
         if ! "${sparse_worker_cmd[@]}"; then
@@ -319,12 +410,12 @@ run_sparse_workflow() {
         done
         cp "$loop_srm_dir/srm_metadata.json" \
             "$CHUNK_OUTPUT_DIR/srm_metadata_loop_${CURRENT_LOOP_ID}.json"
-        for stats_file in "$loop_dir"/*_sim_stats.txt; do
+        for stats_file in "$loop_dir"/*_sim_stats.txt "$loop_dir"/numa*/*_sim_stats.txt; do
             [[ -f "$stats_file" ]] || continue
             # report_campaign_progress.py globs "*_sim_stats_loop_*.txt".
             cp "$stats_file" "$CHUNK_OUTPUT_DIR/$(basename "$stats_file" _sim_stats.txt)_sim_stats_loop_${CURRENT_LOOP_ID}.txt"
         done
-        for manifest_file in "$loop_dir"/*_run_manifest.json; do
+        for manifest_file in "$loop_dir"/*_run_manifest.json "$loop_dir"/numa*/*_run_manifest.json; do
             [[ -f "$manifest_file" ]] || continue
             cp "$manifest_file" "$CHUNK_OUTPUT_DIR/$(basename "$manifest_file")"
         done

@@ -199,16 +199,25 @@ def scan_task(task_dir: Path, srm_label: str) -> dict:
     sim_seconds = 0.0
     init_seconds = 0.0
     loops_done = 0
+    # A loop can hold several stats files (one Gate process per NUMA domain, run in
+    # parallel): count the loop once, sum its primaries, and take its slowest
+    # process as the loop's simulation and init time.
+    loop_seconds: dict[str, list[float]] = {}
     for stats_path in sorted(chunk_dir.glob("*_sim_stats_loop_*.txt")):
         stats = read_json(stats_path)
         if not stats:
             continue
-        loops_done += 1
+        loop_id = stats_path.name.rsplit("_sim_stats_loop_", 1)[1].removesuffix(".txt")
         primaries += int(stats.get("events", {}).get("value", 0))
         tracks += int(stats.get("tracks", {}).get("value", 0))
         steps += int(stats.get("steps", {}).get("value", 0))
-        sim_seconds += duration_to_seconds(stats.get("duration", {}))
-        init_seconds += duration_to_seconds(stats.get("init", {}))
+        duration = duration_to_seconds(stats.get("duration", {}))
+        init = duration_to_seconds(stats.get("init", {}))
+        previous = loop_seconds.get(loop_id, [0.0, 0.0])
+        loop_seconds[loop_id] = [max(previous[0], duration), max(previous[1], init)]
+    loops_done = len(loop_seconds)
+    sim_seconds = sum(v[0] for v in loop_seconds.values())
+    init_seconds = sum(v[1] for v in loop_seconds.values())
 
     raw_singles = 0
     accepted_singles = 0

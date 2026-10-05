@@ -19,6 +19,9 @@ export ACTOR_LAYOUT="${ACTOR_LAYOUT:-merged}"
 export SHIELD_MODEL="${SHIELD_MODEL:-csg}"
 export SHIELD_PIECES_DIR="${SHIELD_PIECES_DIR:-}"
 export CHECK_OVERLAPS="${CHECK_OVERLAPS:-0}"
+# One Gate process per NUMA domain of the node (numa_layout.py): 3.3x the node
+# throughput of a single process on Expanse. NUMA_SPLIT=off restores one process.
+export NUMA_SPLIT="${NUMA_SPLIT:-auto}"
 SOURCE_ACTIVITY_BQ="${SOURCE_ACTIVITY_BQ:-6.25e6}"
 NUM_CHUNKS="${NUM_CHUNKS:-4}"
 AUTO_REPORT_ARGS=(--auto-report --report-interval-s 60 --report-partition shared

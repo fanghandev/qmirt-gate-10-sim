@@ -27,6 +27,9 @@ export SHIELD_PIECES_DIR="${SHIELD_PIECES_DIR:-}"
 # Geant4's overlap check is off in production loops (it reruns every loop); the CSG
 # production geometry (288 mm FOV) was checked once with --check-overlaps: none.
 export CHECK_OVERLAPS="${CHECK_OVERLAPS:-0}"
+# One Gate process per NUMA domain of the node (numa_layout.py): 3.3x the node
+# throughput of a single process on Expanse. NUMA_SPLIT=off restores one process.
+export NUMA_SPLIT="${NUMA_SPLIT:-auto}"
 # 1 s chunks of 6.25e6 Bq per thread keep each chunk at 7.9e8 events (32-bit EventID
 # limit 2.1e9); loop length is set by the number of chunks.
 NUM_CHUNKS="${NUM_CHUNKS:-40}"

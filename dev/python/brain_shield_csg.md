@@ -282,6 +282,69 @@ Launch procedure:
 5. Keep the CSG campaign in its own group; do not merge it with STL-shield SRMs
    without the SRM-level check (pending item 3).
 
+## Expanse results and the NUMA split (2026-10-02 to 10-05)
+
+A/B benchmark on Expanse (`launch_brain_expanse_shield_ab_benchmark.sh`, stamp
+20261002T175708Z; 127 threads on the shared partition, 288 mm FOV, production
+activity; slope between 2- and 8-chunk loops):
+
+| Configuration | µs per primary per thread | Node throughput vs legacy |
+| --- | --- | --- |
+| legacy: per-head actors + full STL | 217 | 1x |
+| merged actors + 0.05 mm simplified STL | 55.9 | 3.9x |
+| merged actors + CSG, one Gate process | 50.6 | 4.3x |
+| merged actors + CSG, 8 processes x 16 threads, `numactl`-pinned (test job 54591702) | ~15 | ~13x |
+
+- The workstation gave 10 µs for merged + CSG (12 µs inside the production container),
+  so the container is not the cause.
+- **Why one process is slow on Expanse:** a node has 8 NUMA domains of 16 cores (2 x
+  EPYC 7742, NPS4; `ThreadsPerCore=1`). Geant4's master thread allocates the shared
+  geometry and physics tables, so they land in its domain (Linux first-touch); about
+  111 of 127 workers then read them across the fabric on every step. Photon transport
+  is latency-bound (navigation and cross-section lookups), so this dominates once the
+  CSG makes the geometry cheap. The workstation is one NUMA domain. One process per
+  domain, bound to its cores and memory, keeps every read local; the cost is 8 copies
+  of the tables (a few GB each) and 8 start-ups. Not profiled with hardware counters;
+  `numastat`/`perf` on one job would confirm it directly.
+- The legacy setup was bandwidth-bound on the workstation (8 memory channels for 64
+  cores) and ran faster on Expanse (217 vs 518 µs), which hid this effect before.
+- Stuck tracks: the CSG run had 3 `GeomNav1002` warnings in 6.35e9 primaries, all on a
+  tile's inner surface (r = 145.000 mm) next to an aperture lip; Geant4 pushes the
+  photon on. About 5e-10 per primary, negligible for the SRM.
+
+Projection for the full 288 mm target (1.016e14 primaries, 64 nodes, no queue time):
+legacy ~5.6M SU / ~31 days; merged + CSG one process ~1.45M SU / ~7.3 days; merged +
+CSG NUMA split ~0.47M SU / ~2.4 days.
+
+### The NUMA-split workflow (implemented 2026-10-05)
+
+| Piece | Role |
+| --- | --- |
+| `submit_slurm/numa_layout.py` | Groups the job's CPUs (`sched_getaffinity`) by NUMA node (`/sys/devices/system/node`); groups under 4 CPUs are merged into a neighbour. `NUMA_SPLIT=auto` (default), `off`, or `N` equal groups (testing). Runs inside the image. |
+| `submit_slurm/run_parallel_commands.sh` | Runs one command per line in parallel, fails if any fails, forwards TERM/INT to every process tree. |
+| `wrapper_brain_spect_sim_slurm.sh` | Per loop: one `numactl --physcpubind=<cpus> --membind=<node>` Gate process per group, each with its own thread count, task id (`<task>_loop_<n>_n<g>`, so its own seed), output folder `loop_<n>/numa<g>/` and log. Statistics and run manifests are copied from the subfolders; the SRM converter already searches them. Geant4 warnings go to `srm_chunks/geant4_warnings_loop_<n>.txt`; after a failure the log tails go to `srm_chunks/failed_loop_<n>/`. `PYTHONUNBUFFERED=1` keeps Gate's messages in the logs. |
+| `report_campaign_progress.py`, `analyze_brain_shield_ab_benchmark.py` | Group statistics files by loop: a loop counts once, its primaries are summed and its time is its slowest process. |
+| `NUMA_SPLIT` | Default `auto` in the production and benchmark scripts; recorded in `campaign_manifest.json`. A shared-partition job (127 CPUs) runs 7 x 16 + 1 x 15 threads. |
+
+Local tests (workstation, production container, 64 CPUs, `NUMA_SPLIT=4`):
+
+- layout on real and fake (8-domain) topologies; identical inside the image;
+- launcher: success, one failure (others finish, non-zero exit), TERM kills every
+  process tree;
+- live pinning: each Gate process confined to its 16 CPUs and memory node;
+- 2 loops x 4 processes: distinct seeds, all ROOT files converted, primaries in the
+  combined SRM equal the sum of the statistics files, task marked complete;
+- detection rate split vs one process: 358.5 +/- 2.2 vs 363.0 +/- 2.2 counts per 1e6
+  primaries (-1.5 sigma);
+- injected failure in one process of loop 1: loop 1 dropped, its log tails kept,
+  partial SRM from loop 0, no completion marker;
+- reporter and analyzer: 2 loops (not 8), simulation time = slowest process per loop.
+
+Validation on Expanse (next step): `AB_CONFIGS=csg_numa bash submit_slurm/launch_brain_expanse_shield_ab_benchmark.sh`
+(two jobs, ~30 SU), then the analyzer on the `brain_ab_csg_numa_*` folders; it
+recommends `NUM_CHUNKS`, `NUM_LOOPS` and `SU_PER_LOOP` for the production launcher
+(provisional `SU_PER_LOOP=135` per 40-chunk loop).
+
 ## Pending (for later pickup)
 
 The results above are sufficient to adopt the tiled CSG. More rigorous checks that

@@ -30,11 +30,12 @@ REPORT_TIME_LIMIT="${REPORT_TIME_LIMIT:-2-00:00:00}"
 CONCURRENT_LIMIT="${CONCURRENT_LIMIT:-}"
 CHAIN_BATCHES="${CHAIN_BATCHES:-1}"
 DRY_RUN="${DRY_RUN:-0}"
-# SU per loop of NUM_CHUNKS chunks. Provisional: the 210 mm campaign's 436 SU per
-# 10-chunk loop, scaled to 40 chunks and divided by an assumed 10x speed-up (merged
-# actors + CSG shield). Replace with the value from
-# analyze_brain_shield_ab_benchmark.py after the Expanse A/B benchmark.
-SU_PER_LOOP="${SU_PER_LOOP:-175}"
+# SU per loop of NUM_CHUNKS chunks. Provisional, from the 2026-10-02 Expanse tests:
+# merged actors + CSG shield with one Gate process per NUMA domain ran at ~15 us per
+# primary per thread (vs 50.6 as one process), so a 40-chunk loop (2.5e8 primaries
+# per thread) is ~1.04 h x 127 CPUs = ~135 SU. Replace with the value from
+# analyze_brain_shield_ab_benchmark.py after the csg_numa validation run.
+SU_PER_LOOP="${SU_PER_LOOP:-135}"
 
 if ! [[ "$BATCH_COUNT" =~ ^[1-9][0-9]*$ ]]; then
     echo "BATCH_COUNT must be a positive integer" >&2
