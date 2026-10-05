@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import sqlite3
 
 import numpy as np
 import polars as pl
@@ -31,6 +32,33 @@ def scan_brain_campaigns(directory):
                     valid_task_ids.append(task_id)
 
     return pulled_task_ids, valid_task_ids
+
+
+def database_task_ids(db_path: str, campaign: str) -> set[int] | None:
+    """Tasks the local job database records as pulled and complete for *campaign*.
+
+    None when the database has no rows for the campaign (fall back to the file scan).
+    """
+    if not os.path.isfile(db_path):
+        return None
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT array_task_id, state, is_pulled FROM slurm_jobs WHERE campaign_name = ?",
+            (campaign,),
+        ).fetchall()
+    if not rows:
+        return None
+    return {int(task) for task, state, pulled in rows if pulled and state == "COMPLETED"}
+
+
+def mark_tasks_merged(db_path: str, campaign: str, task_ids: list[int]) -> None:
+    """Record which tasks the per-head SRMs now contain (and that the others are not)."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE slurm_jobs SET is_merged = 0 WHERE campaign_name = ?", (campaign,))
+        conn.executemany(
+            "UPDATE slurm_jobs SET is_merged = 1 WHERE campaign_name = ? AND array_task_id = ?",
+            [(campaign, task_id) for task_id in task_ids],
+        )
 
 
 def create_per_resolution_srm_pl_df(
@@ -258,6 +286,13 @@ def get_parser_args():
     parser.add_argument(
         "--pixels", type=int, default=625, help="Number of pixels per head"
     )
+    parser.add_argument(
+        "--db",
+        default=None,
+        help="Local job database (update_local_slurm_campaign_database.py). When it has "
+        "rows for this campaign, only tasks it records as pulled and COMPLETED are "
+        "merged, and they are marked is_merged=1 afterwards.",
+    )
     return parser.parse_args()
 
 
@@ -271,6 +306,21 @@ def main():
     valid_task_ids.sort()
     print(f"Find {len(pulled_task_ids)} pulled task IDs")
     print(f"Find {len(valid_task_ids)} valid task IDs")
+    campaign = os.path.basename(os.path.normpath(directory))
+    db_ids = database_task_ids(args.db, campaign) if args.db else None
+    if db_ids is not None:
+        skipped = sorted(set(valid_task_ids) - db_ids)
+        missing = sorted(db_ids - set(valid_task_ids))
+        valid_task_ids = [task_id for task_id in valid_task_ids if task_id in db_ids]
+        print(f"Database {args.db}: {len(db_ids)} pulled COMPLETED tasks; merging {len(valid_task_ids)}")
+        if skipped:
+            print(f"  not COMPLETED/pulled in the database, skipped: {skipped[:20]}")
+        if missing:
+            print(f"  COMPLETED in the database but files incomplete, skipped: {missing[:20]}")
+    elif args.db:
+        print(f"Database {args.db} has no rows for {campaign}; using the file scan")
+    if not valid_task_ids:
+        raise SystemExit(f"No mergeable tasks in {directory}")
 
     resolution_name_stems = ["1mm", "1p5mm", "2mm"]
     grid_sizes = [
@@ -321,9 +371,13 @@ def main():
         resolution_metadata["input_count"] = len(valid_task_ids)
         print(f"Wrote {args.heads} {resolution_stem} per-head SRMs to {output_dir}")
 
+    metadata["merged_task_ids"] = valid_task_ids
     with open(os.path.join(output_dir, "combined_srm_metadata.json"), "w") as handle:
         json.dump(metadata, handle, indent=2)
         handle.write("\n")
+    if db_ids is not None:
+        mark_tasks_merged(args.db, campaign, valid_task_ids)
+        print(f"Marked {len(valid_task_ids)} tasks is_merged=1 in {args.db}")
 
 
 if __name__ == "__main__":

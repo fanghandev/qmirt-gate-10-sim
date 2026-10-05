@@ -128,6 +128,18 @@ def parse_args() -> argparse.Namespace:
         help="Skip SRM matrix statistics in the report (much faster for frequent polling).",
     )
     parser.add_argument(
+        "--update-db",
+        action="store_true",
+        help="After each pull, record task states and counts in the local SQLite "
+        "database (update_local_slurm_campaign_database.py; sacct over ssh when the "
+        "connection is available, local files otherwise).",
+    )
+    parser.add_argument(
+        "--db",
+        help="Database for --update-db (default: the updater's, "
+        "/data/fanghan/opengate_sim/data/brain_spect/expanse_slurm_jobs.db).",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Report what would be transferred without submitting anything.",
@@ -456,6 +468,26 @@ def harvest_campaign(
     }
 
 
+def update_database(local_campaign: Path, db: str | None) -> None:
+    """Record the campaign's Slurm states and pulled-task counts; never fatal."""
+    command = [
+        sys.executable,
+        str(REPO_ROOT / "payload" / "python" / "update_local_slurm_campaign_database.py"),
+        "--campaign-dir",
+        str(local_campaign),
+        "--sacct-optional",
+    ]
+    if db:
+        command += ["--db", db]
+    result = subprocess.run(command, check=False)
+    if result.returncode != 0:
+        print(
+            f"Warning: database update failed for {local_campaign.name} "
+            f"(exit {result.returncode})",
+            file=sys.stderr,
+        )
+
+
 def harvest_root(
     mount_root: Path,
     local_root: Path,
@@ -467,6 +499,8 @@ def harvest_root(
     report_after_pull: bool = False,
     expected_tasks: int = 0,
     no_srm_stats: bool = False,
+    update_db: bool = False,
+    db: str | None = None,
 ) -> dict[str, dict]:
     """Harvest every started campaign shard matching *campaign_glob* under *mount_root*."""
     summary: dict[str, dict] = {}
@@ -498,6 +532,8 @@ def harvest_root(
             combine_campaign(local_campaign, expected_tasks)
         if report_after_pull:
             report_campaign(local_campaign, expected_tasks, no_srm_stats)
+        if update_db:
+            update_database(local_campaign, db)
     return summary
 
 
@@ -646,6 +682,8 @@ def main() -> int:
             report_after_pull=args.report_after_pull,
             expected_tasks=args.expected_tasks,
             no_srm_stats=args.no_srm_stats,
+            update_db=args.update_db,
+            db=args.db,
         )
         return 0
 
@@ -694,6 +732,8 @@ def main() -> int:
             copy_campaign_files_from_mount(mount, local_campaign)
         if args.report_after_pull:
             report_campaign(local_campaign, args.expected_tasks, args.no_srm_stats)
+        if args.update_db and local_campaign.is_dir():
+            update_database(local_campaign, args.db)
         return 0
 
     print(f"Ready tasks: {len(tasks)}; campaign files: {len(campaign_files)}")
@@ -746,6 +786,9 @@ def main() -> int:
     if args.report_after_pull:
         print("Refreshing local progress report...")
         report_campaign(local_campaign, args.expected_tasks, args.no_srm_stats)
+
+    if args.update_db:
+        update_database(local_campaign, args.db)
 
     return 1 if failed else 0
 
