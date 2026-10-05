@@ -16,6 +16,8 @@ SRM_FOV_SIZE_MM="${SRM_FOV_SIZE_MM:-288}"
 # SHIELD_PIECES_DIR). Production activity per thread; one loop of NUM_CHUNKS 1 s
 # chunks. Two NUM_CHUNKS values give the cost per primary as a slope.
 export ACTOR_LAYOUT="${ACTOR_LAYOUT:-merged}"
+# PHYSICS_LIST: Geant4 physics list (production: G4EmStandardPhysics_option4).
+export PHYSICS_LIST="${PHYSICS_LIST:-G4EmStandardPhysics_option4}"
 export SHIELD_MODEL="${SHIELD_MODEL:-csg}"
 export SHIELD_PIECES_DIR="${SHIELD_PIECES_DIR:-}"
 export CHECK_OVERLAPS="${CHECK_OVERLAPS:-0}"

@@ -24,6 +24,7 @@ NUM_LOOPS="${NUM_LOOPS:-5}"
 NUM_CHUNKS="${NUM_CHUNKS:-40}"
 SHIELD_MODEL="${SHIELD_MODEL:-csg}"
 ACTOR_LAYOUT="${ACTOR_LAYOUT:-merged}"
+PHYSICS_LIST="${PHYSICS_LIST:-G4EmStandardPhysics_option4}"
 TIME_LIMIT="${TIME_LIMIT:-24:00:00}"
 SRM_FOV_SIZE_MM="${SRM_FOV_SIZE_MM:-288}"
 REPORT_TIME_LIMIT="${REPORT_TIME_LIMIT:-2-00:00:00}"
@@ -100,8 +101,8 @@ for ((batch_index = PART_INDEX_START; batch_index <= PART_INDEX_END; batch_index
         array_dependency="afterany:${previous_job_id}"
     fi
     printf -v remote_command \
-        'cd -- %q && BATCH_ID=%q JOB_COUNT=%q CONCURRENT_LIMIT=%q NUM_LOOPS=%q NUM_CHUNKS=%q SHIELD_MODEL=%q ACTOR_LAYOUT=%q TIME_LIMIT=%q SRM_FOV_SIZE_MM=%q REPORT_TIME_LIMIT=%q ARRAY_DEPENDENCY=%q CAMPAIGN_GROUP_ID=%q CAMPAIGN_PART_INDEX=%q CAMPAIGN_PART_COUNT=%q bash submit_slurm/run_brain_expanse_127_production.sh' \
-        "$REMOTE_REPO" "$batch_id" "$JOB_COUNT" "$CONCURRENT_LIMIT" "$NUM_LOOPS" "$NUM_CHUNKS" "$SHIELD_MODEL" "$ACTOR_LAYOUT" "$TIME_LIMIT" "$SRM_FOV_SIZE_MM" "$REPORT_TIME_LIMIT" "$array_dependency" "$CAMPAIGN_GROUP_ID" "$batch_index" "$CAMPAIGN_PART_COUNT"
+        'cd -- %q && BATCH_ID=%q JOB_COUNT=%q CONCURRENT_LIMIT=%q NUM_LOOPS=%q NUM_CHUNKS=%q SHIELD_MODEL=%q ACTOR_LAYOUT=%q PHYSICS_LIST=%q TIME_LIMIT=%q SRM_FOV_SIZE_MM=%q REPORT_TIME_LIMIT=%q ARRAY_DEPENDENCY=%q CAMPAIGN_GROUP_ID=%q CAMPAIGN_PART_INDEX=%q CAMPAIGN_PART_COUNT=%q bash submit_slurm/run_brain_expanse_127_production.sh' \
+        "$REMOTE_REPO" "$batch_id" "$JOB_COUNT" "$CONCURRENT_LIMIT" "$NUM_LOOPS" "$NUM_CHUNKS" "$SHIELD_MODEL" "$ACTOR_LAYOUT" "$PHYSICS_LIST" "$TIME_LIMIT" "$SRM_FOV_SIZE_MM" "$REPORT_TIME_LIMIT" "$array_dependency" "$CAMPAIGN_GROUP_ID" "$batch_index" "$CAMPAIGN_PART_COUNT"
 
     printf 'Submitting part %d/%d as %s (jobs=%s, loops=%s x %s chunks, fov=%s mm, shield=%s, concurrent=%s)\n' \
         "$batch_index" "$CAMPAIGN_PART_COUNT" "$batch_id" "$JOB_COUNT" "$NUM_LOOPS" "$NUM_CHUNKS" "$SRM_FOV_SIZE_MM" "$SHIELD_MODEL" "$CONCURRENT_LIMIT" | tee -a "$local_log"

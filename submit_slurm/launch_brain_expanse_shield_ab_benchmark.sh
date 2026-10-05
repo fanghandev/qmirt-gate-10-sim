@@ -7,12 +7,14 @@
 #   legacy    per-head actors + full STL             (the 210 mm campaigns' setup)
 #   pieces    merged actors + 0.05 mm simplified STL
 #   csg       merged actors + analytic CSG shield, one Gate process
-#   csg_numa  merged actors + CSG, one Gate process per NUMA domain (production)
-# AB_CONFIGS selects which to submit (default: all four). Run from an Expanse login
+#   csg_numa  merged actors + CSG, one Gate process per NUMA domain
+#   csg_numa_opt4  csg_numa with G4EmStandardPhysics_option4 (production)
+# The first four use opengate's default physics list, QGSP_BERT_EMV.
+# AB_CONFIGS selects which to submit (default: all). Run from an Expanse login
 # node; then, once the jobs finish:
 #   python3 submit_slurm/analyze_brain_shield_ab_benchmark.py <PROJECT_DIR>/brain_spect_sim/brain_ab_*_<STAMP>
-# Rough cost: ~600 SU for all four (most of it the legacy configuration); csg_numa
-# alone ~30 SU.
+# Rough cost: ~600 SU for all (most of it the legacy configuration); csg_numa
+# or csg_numa_opt4 alone ~30-40 SU.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,14 +24,15 @@ NUM_CHUNKS_LARGE="${NUM_CHUNKS_LARGE:-8}"
 SIMPLIFIED_DIR="persistent_data/brain_spect/stl/BrainFrame.008.Lead_Shield.simplified_0.05mm"
 DRY_RUN="${DRY_RUN:-0}"
 
-AB_CONFIGS="${AB_CONFIGS:-legacy pieces csg csg_numa}"
+AB_CONFIGS="${AB_CONFIGS:-legacy pieces csg csg_numa csg_numa_opt4}"
 
-# name  actor layout  shield model  pieces dir  NUMA split  time limit
+# name  actor layout  shield model  pieces dir  NUMA split  time limit  physics list
 CONFIGS=(
-    "legacy per-head stl - off 05:00:00"
-    "pieces merged pieces ${SIMPLIFIED_DIR} off 02:00:00"
-    "csg merged csg - off 01:00:00"
-    "csg_numa merged csg - auto 01:00:00"
+    "legacy per-head stl - off 05:00:00 QGSP_BERT_EMV"
+    "pieces merged pieces ${SIMPLIFIED_DIR} off 02:00:00 QGSP_BERT_EMV"
+    "csg merged csg - off 01:00:00 QGSP_BERT_EMV"
+    "csg_numa merged csg - auto 01:00:00 QGSP_BERT_EMV"
+    "csg_numa_opt4 merged csg - auto 01:00:00 G4EmStandardPhysics_option4"
 )
 
 if [[ "$(hostname -s)" != login* && "$DRY_RUN" != "1" ]]; then
@@ -38,17 +41,17 @@ if [[ "$(hostname -s)" != login* && "$DRY_RUN" != "1" ]]; then
 fi
 
 for config in "${CONFIGS[@]}"; do
-    read -r name layout model pieces numa time_limit <<<"$config"
+    read -r name layout model pieces numa time_limit physics <<<"$config"
     [[ " $AB_CONFIGS " == *" $name "* ]] || continue
     [[ "$pieces" == "-" ]] && pieces=""
     for chunks in "$NUM_CHUNKS_SMALL" "$NUM_CHUNKS_LARGE"; do
         batch_id="brain_ab_${name}_c${chunks}_${STAMP}"
-        echo "Submitting ${batch_id}: actors=${layout} shield=${model} numa=${numa} chunks=${chunks}"
+        echo "Submitting ${batch_id}: actors=${layout} shield=${model} numa=${numa} physics=${physics} chunks=${chunks}"
         if [[ "$DRY_RUN" == "1" ]]; then
             continue
         fi
         BATCH_ID="$batch_id" ACTOR_LAYOUT="$layout" SHIELD_MODEL="$model" \
-            SHIELD_PIECES_DIR="$pieces" NUMA_SPLIT="$numa" NUM_CHUNKS="$chunks" TIME_LIMIT="$time_limit" \
+            SHIELD_PIECES_DIR="$pieces" NUMA_SPLIT="$numa" PHYSICS_LIST="$physics" NUM_CHUNKS="$chunks" TIME_LIMIT="$time_limit" \
             bash "${SCRIPT_DIR}/run_brain_expanse_127_benchmark.sh"
     done
 done

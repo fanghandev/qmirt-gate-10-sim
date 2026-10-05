@@ -766,6 +766,8 @@ def run_simulation(
     # Geant4's overlap check runs by default and repeats in every loop; check once
     # per geometry change instead (--check-overlaps)
     sim.check_volumes_overlap = bool(getattr(args, "check_overlaps", False))
+    sim.physics_manager.physics_list_name = getattr(args, "physics_list", "QGSP_BERT_EMV")
+    print(f"Physics list: {sim.physics_manager.physics_list_name}")
     sim.volume_manager.add_material_database(persist_data_dir / "GateMaterials.db")
     print(f"Using GateMaterials.db from {persist_data_dir}")
     # Add Geometry to the simulation
@@ -953,6 +955,15 @@ def parse_arguments():
         default="merged",
         help="Singles digitizer: one chain for all heads writing a 'Singles' tree "
         "(default, much faster) or one chain per head writing 'Pixel_<N>_Singles'.",
+    )
+    parser.add_argument(
+        "--physics-list",
+        type=str,
+        default="QGSP_BERT_EMV",
+        help="Geant4 physics list. QGSP_BERT_EMV (opengate's default, used by the "
+        "210 mm campaigns) has no Rayleigh scattering, Klein-Nishina Compton without "
+        "binding and no fluorescence; G4EmStandardPhysics_option4 has all three "
+        "(~1.4x slower; used for the 288 mm campaign).",
     )
 
     return parser.parse_args()

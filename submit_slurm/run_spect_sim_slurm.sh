@@ -24,6 +24,7 @@ NUM_LOOPS="${NUM_LOOPS:-1}"
 SPARSE_SRM="${SPARSE_SRM:-0}"
 SRM_FOV_SIZE_MM="${SRM_FOV_SIZE_MM:-210}"
 ACTOR_LAYOUT="${ACTOR_LAYOUT:-merged}"
+PHYSICS_LIST="${PHYSICS_LIST:-QGSP_BERT_EMV}"
 SHIELD_PIECES_DIR="${SHIELD_PIECES_DIR:-}"
 SHIELD_MODEL="${SHIELD_MODEL:-}"
 CHECK_OVERLAPS="${CHECK_OVERLAPS:-0}"
@@ -474,6 +475,7 @@ export NUM_LOOPS="${NUM_LOOPS}"
 export SPARSE_SRM="${SPARSE_SRM}"
 export SRM_FOV_SIZE_MM="${SRM_FOV_SIZE_MM}"
 export ACTOR_LAYOUT="${ACTOR_LAYOUT}"
+export PHYSICS_LIST="${PHYSICS_LIST}"
 export SHIELD_PIECES_DIR="${SHIELD_PIECES_DIR}"
 export SHIELD_MODEL="${SHIELD_MODEL}"
 export CHECK_OVERLAPS="${CHECK_OVERLAPS}"
@@ -603,6 +605,7 @@ cat > "$MANIFEST_FILE" <<EOF
   "sparse_srm": ${SPARSE_SRM},
   "srm_fov_size_mm": ${SRM_FOV_SIZE_MM},
   "actor_layout": "${ACTOR_LAYOUT}",
+  "physics_list": "${PHYSICS_LIST}",
   "shield_pieces_dir": "${SHIELD_PIECES_DIR}",
   "shield_model": "${SHIELD_MODEL:-$([[ -n "$SHIELD_PIECES_DIR" ]] && echo pieces || echo stl)}",
   "check_overlaps": ${CHECK_OVERLAPS},

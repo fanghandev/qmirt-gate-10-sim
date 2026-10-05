@@ -2,7 +2,7 @@
 """Cost per primary and production loop sizing from the Expanse A/B benchmark.
 
 Reads the campaign directories written by launch_brain_expanse_shield_ab_benchmark.sh
-(one task, one loop each). For every configuration (actor layout, shield model) the
+(one task, one loop each). For every configuration (actors, shield, NUMA split, physics list) the
 two loop sizes give
 
   task wall time = fixed + primaries_per_thread * cost_per_primary_per_thread
@@ -72,6 +72,7 @@ def load_campaign(path):  # plain hints: Expanse has Python 3.6
         "actor_layout": manifest.get("actor_layout", "per-head"),
         "shield_model": manifest.get("shield_model", "stl"),
         "numa_split": manifest.get("numa_split", "off"),  # older manifests: one process
+        "physics_list": manifest.get("physics_list", "QGSP_BERT_EMV"),  # opengate default
         "num_chunks": int(manifest["num_chunks"]),
         "threads": threads,
         "primaries": primaries / n_tasks,
@@ -94,15 +95,15 @@ def main():
     for path in args.campaign_dirs:
         c = load_campaign(path)
         if c:
-            groups[(c["actor_layout"], c["shield_model"], c["numa_split"])].append(c)
+            groups[(c["actor_layout"], c["shield_model"], c["numa_split"], c["physics_list"])].append(c)
 
-    print(f"{'actors':9s} {'shield':7s} {'numa':5s} {'us/primary/thread':>18s} {'fixed per loop (s)':>19s}"
-          f" {'Gate-only us/primary/thread':>28s}")
+    print(f"{'actors':9s} {'shield':7s} {'numa':5s} {'physics':28s} {'us/primary/thread':>18s}"
+          f" {'fixed per loop (s)':>19s} {'Gate-only us/primary/thread':>28s}")
     results = {}
     for key, runs in sorted(groups.items()):
         runs.sort(key=lambda c: c["primaries"])
         if len({c["num_chunks"] for c in runs}) < 2:
-            print(f"{key[0]:9s} {key[1]:7s} {key[2]:5s} need two different NUM_CHUNKS ({len(runs)} run(s) found)")
+            print(f"{key[0]:9s} {key[1]:7s} {key[2]:5s} {key[3]:28s} need two different NUM_CHUNKS ({len(runs)} run(s) found)")
             continue
         a, b = runs[0], runs[-1]
         per_thread = lambda c: c["primaries"] / c["threads"]  # noqa: E731
@@ -110,9 +111,12 @@ def main():
         fixed = a["wall_s"] - per_thread(a) * cost
         gate_cost = (b["simulation_s"] - a["simulation_s"]) / (per_thread(b) - per_thread(a))
         results[key] = (cost, fixed, b["threads"])
-        print(f"{key[0]:9s} {key[1]:7s} {key[2]:5s} {cost * 1e6:18.2f} {fixed:19.0f} {gate_cost * 1e6:28.2f}")
+        print(f"{key[0]:9s} {key[1]:7s} {key[2]:5s} {key[3]:28s} {cost * 1e6:18.2f} {fixed:19.0f} {gate_cost * 1e6:28.2f}")
 
-    production = next((k for k in (("merged", "csg", "auto"), ("merged", "csg", "off"))
+    # production: option 4 physics with the NUMA split; else the best EMV CSG setup
+    production = next((k for k in (("merged", "csg", "auto", "G4EmStandardPhysics_option4"),
+                                   ("merged", "csg", "auto", "QGSP_BERT_EMV"),
+                                   ("merged", "csg", "off", "QGSP_BERT_EMV"))
                        if k in results), None)
     if production:
         cost, fixed, threads = results[production]
@@ -123,13 +127,13 @@ def main():
         su_per_loop = threads * loop_s / 3600
         primaries_per_loop = chunks * EVENTS_PER_CHUNK_PER_THREAD * threads
         print(f"\nProduction recommendation (merged actors + CSG shield, NUMA split "
-              f"{production[2]}, {threads} threads):")
+              f"{production[2]}, {production[3]}, {threads} threads):")
         print(f"  NUM_CHUNKS={chunks}  (loop ~{loop_s / 60:.0f} min, {primaries_per_loop:.3e} primaries)")
         print(f"  NUM_LOOPS={loops}    (task ~{loops * loop_s / 3600:.1f} h of a {args.time_limit_hours:.0f} h limit)")
         print(f"  SU_PER_LOOP={su_per_loop:.0f}")
         target = 1.016e14
         print(f"  full 288 mm target {target:.3e} primaries: ~{target / primaries_per_loop * su_per_loop:,.0f} SU")
-        legacy = results.get(("per-head", "stl", "off"))
+        legacy = results.get(("per-head", "stl", "off", "QGSP_BERT_EMV"))
         if legacy:
             print(f"  speed-up vs the legacy setup: {legacy[0] / cost:.1f}x")
     return 0

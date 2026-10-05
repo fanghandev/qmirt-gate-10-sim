@@ -181,6 +181,7 @@ build_sim_command() {
             --fov-shape sphere
             --fov-size-mm "${SRM_FOV_SIZE_MM:-210}"
             --actor-layout "${ACTOR_LAYOUT:-merged}"
+            --physics-list "${PHYSICS_LIST:-QGSP_BERT_EMV}"
             "${SHIELD_ARGS[@]}"
         )
     else
@@ -198,6 +199,7 @@ build_sim_command() {
             --fov-shape sphere
             --fov-size-mm "${SRM_FOV_SIZE_MM:-210}"
             --actor-layout "${ACTOR_LAYOUT:-merged}"
+            --physics-list "${PHYSICS_LIST:-QGSP_BERT_EMV}"
             "${SHIELD_ARGS[@]}"
         )
     fi
@@ -261,6 +263,7 @@ echo "Chunk duration: ${CHUNK_DURATION_S} s"
 echo "Num chunks: ${NUM_CHUNKS}"
 echo "Sparse SRM mode: ${SPARSE_SRM}"
 echo "Actor layout: ${ACTOR_LAYOUT:-merged}"
+echo "Physics list: ${PHYSICS_LIST:-QGSP_BERT_EMV}"
 echo "Shield model: ${SHIELD_MODEL}${SHIELD_PIECES_DIR:+ (pieces: $SHIELD_PIECES_DIR)}"
 echo "Overlap check: ${CHECK_OVERLAPS:-0}"
 echo "Num loops: ${NUM_LOOPS}"

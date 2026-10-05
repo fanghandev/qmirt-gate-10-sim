@@ -22,6 +22,11 @@ SRM_FOV_SIZE_MM="${SRM_FOV_SIZE_MM:-288}"
 # See dev/python/brain_shield_csg.md. SHIELD_MODEL=pieces (with SHIELD_PIECES_DIR)
 # or stl restore the older shields.
 export ACTOR_LAYOUT="${ACTOR_LAYOUT:-merged}"
+# Geant4 option 4 EM physics: Rayleigh scattering, Compton with binding/Doppler
+# broadening and fluorescence, none of which opengate's default QGSP_BERT_EMV has
+# (used by the 210 mm campaigns). ~1.4x slower per primary on the workstation;
+# accepted counts within 0.5% of EMV. PHYSICS_LIST=QGSP_BERT_EMV restores the old.
+export PHYSICS_LIST="${PHYSICS_LIST:-G4EmStandardPhysics_option4}"
 export SHIELD_MODEL="${SHIELD_MODEL:-csg}"
 export SHIELD_PIECES_DIR="${SHIELD_PIECES_DIR:-}"
 # Geant4's overlap check is off in production loops (it reruns every loop); the CSG
