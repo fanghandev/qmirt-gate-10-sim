@@ -10,7 +10,8 @@ LOCAL_LOG_DIR="${LOCAL_LOG_DIR:-${SCRIPT_DIR}/logs/remote_submissions}"
 SUBMISSION_TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 # One campaign group spans allocations. To continue it later, pass the same
 # CAMPAIGN_GROUP_ID and set PART_INDEX_START to the next unsubmitted part, e.g.
-#   CAMPAIGN_GROUP_ID=brain_288mm_csg_102t_20261002T120000Z PART_INDEX_START=4 BATCH_COUNT=3 ...
+#   CAMPAIGN_GROUP_ID=brain_288mm_csg_102t_20261002T120000Z PART_INDEX_START=4 BATCH_COUNT=3 \
+#   AFTER_JOB_ID=<reporter job ID of part 3> ...
 CAMPAIGN_GROUP_ID="${CAMPAIGN_GROUP_ID:-brain_288mm_csg_102t_${SUBMISSION_TIMESTAMP}}"
 BATCH_PREFIX="${BATCH_PREFIX:-$CAMPAIGN_GROUP_ID}"
 # Parts to submit now, numbered PART_INDEX_START..PART_INDEX_START+BATCH_COUNT-1.
@@ -88,7 +89,9 @@ fi
 mkdir -p "$LOCAL_LOG_DIR"
 local_log="$LOCAL_LOG_DIR/brain_expanse_production_${SUBMISSION_TIMESTAMP}.log"
 
-previous_job_id=""
+# AFTER_JOB_ID: when continuing a group, the reporter job of its last submitted part,
+# so the first new part waits for it (chained like the parts submitted here).
+previous_job_id="${AFTER_JOB_ID:-}"
 loops_now=$((BATCH_COUNT * JOB_COUNT * NUM_LOOPS))
 printf 'Campaign %s: parts %d-%d of %d, %d loops (%s primaries), ~%d SU estimated\n' \
     "$CAMPAIGN_GROUP_ID" "$PART_INDEX_START" "$PART_INDEX_END" "$CAMPAIGN_PART_COUNT" \
