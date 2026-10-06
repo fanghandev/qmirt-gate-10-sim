@@ -740,6 +740,72 @@
         );
       }
 
+      function dbSpanSeconds(db) {
+        const t = (db && db.available && db.totals) || {};
+        return t.first_submit_epoch_s ? Date.now() / 1000 - t.first_submit_epoch_s : null;
+      }
+
+      // Local job database (harvest timer): per-part pipeline state, failures and
+      // Slurm timing that the cluster progress reports do not carry.
+      function databasePanel(db) {
+        if (!db) return "";
+        if (!db.available)
+          return (
+            '<section class="panel" style="margin-bottom:16px"><h2>Local job database</h2>' +
+            '<div class="sub">' + (db.reason || "unavailable") + "</div></section>"
+          );
+        const ago = db.updated_at ? Date.now() / 1000 - db.updated_at : null;
+        const hrs = (s) => (s == null ? "—" : (s / 3600).toFixed(2) + " h");
+        const rows = (db.parts || [])
+          .map((x) => {
+            const part = x.campaign.match(/_(\d+)$/);
+            const states = Object.entries(x.states || {})
+              .map(([k, v]) => k.toLowerCase() + " " + v)
+              .join(", ");
+            const failed = (x.failed || [])
+              .map((f) => "task " + f.task + " " + f.state + " (" + f.exit_code + ")")
+              .join("; ");
+            return (
+              "<tr><td>" + (part ? "part " + Number(part[1]) : x.campaign) + "</td>" +
+              "<td>" + fmtInt(x.tasks) + "</td>" +
+              '<td style="text-align:left">' + (states || "—") + "</td>" +
+              "<td>" + fmtInt(x.pulled) + "</td>" +
+              "<td>" + fmtInt(x.merged) + "</td>" +
+              "<td>" + fmtSci(x.completed_primaries) + "</td>" +
+              "<td>" + hrs(x.wait_seconds_mean) + "</td>" +
+              "<td>" + hrs(x.run_seconds_mean) + "</td>" +
+              '<td style="text-align:left;color:' + (failed ? "#f85149" : "inherit") + '">' +
+              (failed || "—") + "</td></tr>"
+            );
+          })
+          .join("");
+        const sets = (db.combined_sets || [])
+          .map((c) => "parts " + c.parts.join(", ") + " → " + c.output.split("/").pop())
+          .join("<br>");
+        const t = db.totals || {};
+        return (
+          '<section class="panel" style="margin-bottom:16px"><h2>Pipeline (local job database)</h2>' +
+          '<div class="sub">' +
+          fmtInt(t.completed) + " completed · " +
+          fmtInt(t.pulled) + " pulled · " +
+          fmtInt(t.merged) + " merged · " +
+          fmtInt(t.failed) + " failed · " +
+          fmtSci(t.completed_primaries) + " primaries in completed tasks · updated " +
+          (ago == null ? "—" : fmtDuration(ago) + " ago") +
+          " by the harvest timer (Slurm states need the ssh socket; waits include waiting for the previous part)</div>" +
+          '<div style="overflow-x:auto;margin-top:8px"><table><thead><tr>' +
+          '<th>Part</th><th>Tasks</th><th style="text-align:left">Slurm / task state</th>' +
+          "<th>Pulled</th><th>Merged</th><th>Primaries (completed)</th>" +
+          "<th>Wait from submit (mean)</th><th>Run, completed (mean)</th>" +
+          '<th style="text-align:left">Failed tasks</th></tr></thead><tbody>' +
+          rows +
+          "</tbody></table></div>" +
+          '<div class="sub" style="margin-top:8px">Combined SRM sets: ' +
+          (sets || "none yet") +
+          "</div></section>"
+        );
+      }
+
       function buildOverview(p) {
         const t = p.tasks,
           ev = p.events,
@@ -809,6 +875,7 @@
                 : "counts in-flight loops on tasks that have not combined yet") +
               "</div>") +
           "</section>" +
+          databasePanel(p.database) +
           '<section class="grid">' +
           card(
             "Primaries in SRM",
@@ -844,8 +911,12 @@
           ) +
           card(
             "Campaign span",
-            fmtDuration(sl.campaign_span_seconds),
-            "first submit \u2192 latest end",
+            fmtDuration(
+              sl.available ? sl.campaign_span_seconds : dbSpanSeconds(p.database),
+            ),
+            sl.available
+              ? "first submit \u2192 latest end"
+              : "first submit \u2192 now (local job database)",
           ) +
           card(
             condor.available ? "SRM loops extracted" : "Loops complete",

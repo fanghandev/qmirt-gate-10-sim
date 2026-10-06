@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import posixpath
 import shlex
 import subprocess
@@ -20,6 +21,123 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 STATIC_DIR = Path(__file__).resolve().parent
+FAILED_STATES = ("FAILED", "TIMEOUT", "CANCELLED", "OUT_OF_MEMORY", "NODE_FAIL", "PREEMPTED",
+                 "BOOT_FAIL", "DEADLINE")
+
+
+def _mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def database_summary(db_path: Path, campaigns: list[str]) -> dict:
+    """Per-part task states, pull/merge status, counts and Slurm timing from the
+    local job database (payload/python/update_local_slurm_campaign_database.py)."""
+    if not db_path.is_file():
+        return {"available": False, "reason": f"{db_path} not found"}
+    summary: dict = {
+        "available": True,
+        "path": str(db_path),
+        "updated_at": db_path.stat().st_mtime,
+        "parts": [],
+    }
+    # read-only: the harvest timer may be writing
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5) as conn:
+        for campaign in campaigns:
+            rows = conn.execute(
+                """SELECT array_task_id, state, exit_code, submit_epoch, start_epoch,
+                          end_epoch, primaries, raw_singles, accepted_singles,
+                          is_pulled, is_merged
+                   FROM slurm_jobs WHERE campaign_name = ?""",
+                (campaign,),
+            ).fetchall()
+            states: dict[str, int] = {}
+            for row in rows:
+                states[row[1] or "UNKNOWN"] = states.get(row[1] or "UNKNOWN", 0) + 1
+            done = [r for r in rows if r[1] == "COMPLETED" and r[9]]
+            waits = [r[4] - r[3] for r in rows if r[3] and r[4]]
+            runs = [r[5] - r[4] for r in rows if r[4] and r[5] and r[1] == "COMPLETED"]
+            submits = [r[3] for r in rows if r[3]]
+            ends = [r[5] for r in rows if r[5]]
+            summary["parts"].append({
+                "campaign": campaign,
+                "tasks": len(rows),
+                "states": states,
+                "pulled": sum(1 for r in rows if r[9]),
+                "merged": sum(1 for r in rows if r[10]),
+                "failed": [
+                    {"task": r[0], "state": r[1], "exit_code": r[2]}
+                    for r in sorted(rows)
+                    if r[1] in FAILED_STATES
+                ],
+                "completed_primaries": sum(r[6] or 0 for r in done),
+                "completed_accepted_singles": sum(r[8] or 0 for r in done),
+                "wait_seconds_mean": sum(waits) / len(waits) if waits else None,
+                "wait_seconds_max": max(waits) if waits else None,
+                "run_seconds_mean": sum(runs) / len(runs) if runs else None,
+                "first_submit_epoch_s": min(submits) if submits else None,
+                "last_end_epoch_s": max(ends) if ends else None,
+            })
+    parts = summary["parts"]
+    submits = [p["first_submit_epoch_s"] for p in parts if p["first_submit_epoch_s"]]
+    ends = [p["last_end_epoch_s"] for p in parts if p["last_end_epoch_s"]]
+    summary["totals"] = {
+        "tasks": sum(p["tasks"] for p in parts),
+        "completed": sum(p["states"].get("COMPLETED", 0) for p in parts),
+        "pulled": sum(p["pulled"] for p in parts),
+        "merged": sum(p["merged"] for p in parts),
+        "failed": sum(len(p["failed"]) for p in parts),
+        "completed_primaries": sum(p["completed_primaries"] for p in parts),
+        "completed_accepted_singles": sum(p["completed_accepted_singles"] for p in parts),
+        "first_submit_epoch_s": min(submits) if submits else None,
+        "last_end_epoch_s": max(ends) if ends else None,
+    }
+    return summary
+
+
+def merge_state(db_path: Path, group_id: str | None) -> list:
+    """Combined SRM sets written by campaign_tools/merge_brain_group.py --auto."""
+    if not group_id:
+        return []
+    try:
+        state = json.loads((db_path.parent / f"{group_id}_merge_state.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    return state.get("combined", []) if isinstance(state, dict) else []
+
+
+def aggregate_slurm(reports: list[dict]) -> dict:
+    """Combine the per-part sacct sections of a campaign group."""
+    sections = [r.get("slurm") for r in reports if (r.get("slurm") or {}).get("available")]
+    if not sections:
+        return {"available": False, "reason": "no part report has sacct data"}
+    states: dict[str, int] = {}
+    for section in sections:
+        for state, count in (section.get("states") or {}).items():
+            states[state] = states.get(state, 0) + count
+    starts = [s["first_submit_epoch_s"] for s in sections if s.get("first_submit_epoch_s")]
+    ends = [
+        s["first_submit_epoch_s"] + s.get("campaign_span_seconds", 0)
+        for s in sections
+        if s.get("first_submit_epoch_s")
+    ]
+    return {
+        "available": True,
+        "parts_with_sacct": len(sections),
+        "states": states,
+        "failed": sum(s.get("failed", 0) for s in sections),
+        "running": sum(s.get("running", 0) for s in sections),
+        "pending": sum(s.get("pending", 0) for s in sections),
+        "completed": sum(s.get("completed", 0) for s in sections),
+        "wait_seconds_sum": sum(s.get("wait_seconds_sum", 0) for s in sections),
+        # parts run one after another, so their queue and run times add up
+        "wait_wallclock_seconds": sum(s.get("wait_wallclock_seconds", 0) for s in sections),
+        "run_wallclock_seconds": sum(s.get("run_wallclock_seconds", 0) for s in sections),
+        "campaign_span_seconds": (max(ends) - min(starts)) if starts else 0.0,
+        "first_submit_epoch_s": min(starts) if starts else None,
+    }
 
 
 class ProgressCache:
@@ -38,6 +156,7 @@ class ProgressCache:
         # When set, the newest batch under this root is re-resolved on every poll,
         # so a new campaign appears without restarting the service.
         self.root = root
+        self.database: Path | None = None  # local job database (--database)
         self.name = name
         self.label = label or name
         self.ssh_host = ssh_host
@@ -52,13 +171,20 @@ class ProgressCache:
     def resolve_path(self) -> Path | None:
         if self.root is None:
             return self.local_path
-        candidates = sorted(self.root.glob("*/progress.json"))
+        candidates = sorted(self.root.glob("*/progress.json"), key=_mtime)
         return candidates[-1] if candidates else None
 
     def resolve_group(self) -> list[Path]:
         if self.root is None:
             return [self.local_path] if self.local_path is not None else []
-        manifests = sorted(self.root.glob("*/campaign_manifest.json"))
+        # newest = most recently written manifest (written at submission), not the
+        # alphabetically last folder: names like brain_ab_<config>_* do not sort by time
+        manifests = sorted(self.root.glob("*/campaign_manifest.json"), key=_mtime)
+        # a campaign still waiting in the queue has no progress.json yet: show the
+        # newest one that has started (or the newest overall if none has)
+        started = [m for m in manifests if (m.parent / "progress.json").exists()]
+        if started:
+            manifests = manifests[: manifests.index(started[-1]) + 1]
         if not manifests:
             path = self.resolve_path()
             return [path] if path is not None else []
@@ -236,6 +362,7 @@ class ProgressCache:
                 ),
             },
             "compute_profile": profile,
+            "slurm": aggregate_slurm(reports),
             "srm": latest.get("srm", {}),
             "group_srm_note": "SRM fields show the newest part until a grouped reduction is generated.",
         }
@@ -251,6 +378,7 @@ class ProgressCache:
                 if self.root is not None and len(paths) > 1:
                     self.group_paths = paths
                     data = self._aggregate_group(paths)
+                    self._attach_database(data)
                     with self.lock:
                         self.payload = data
                         self.fetched_at = time.time()
@@ -271,6 +399,7 @@ class ProgressCache:
                 text = completed.stdout
             data = json.loads(text)
             data["manifest"] = self._read_manifest()
+            self._attach_database(data)
         except Exception as exc:  # noqa: BLE001 - surfaced to the dashboard
             with self.lock:
                 self.error = f"{type(exc).__name__}: {exc}"
@@ -279,6 +408,20 @@ class ProgressCache:
             self.payload = data
             self.fetched_at = time.time()
             self.error = None
+
+    def _attach_database(self, data: dict) -> None:
+        if self.database is None:
+            return
+        campaigns = [path.parent.name for path in self.group_paths] or (
+            [self.local_path.parent.name] if self.local_path else []
+        )
+        try:
+            data["database"] = database_summary(self.database, campaigns)
+            data["database"]["combined_sets"] = merge_state(
+                self.database, data.get("campaign_group_id") or self.group_id
+            )
+        except sqlite3.Error as exc:
+            data["database"] = {"available": False, "reason": f"sqlite: {exc}"}
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -509,6 +652,16 @@ def parse_args() -> argparse.Namespace:
             ".npz files instead of failing with 'SRM not found' on this machine."
         ),
     )
+    parser.add_argument(
+        "--database",
+        action="append",
+        metavar="NAME=PATH",
+        help=(
+            "Local job database (update_local_slurm_campaign_database.py) for the "
+            "campaign NAME (its --campaign/--campaign-root label): task states, "
+            "pull/merge status, failures and Slurm timing are added to the dashboard."
+        ),
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--interval-s", type=float, default=30.0)
@@ -575,6 +728,13 @@ def main() -> int:
             ssh_host=args.ssh_host,
             remote_repo_root=args.remote_repo_root,
         )
+
+    labels = {cache.label: cache for cache in caches.values()}
+    for entry in args.database or []:
+        label, separator, raw_path = entry.partition("=")
+        if not separator or label.strip() not in labels:
+            raise SystemExit(f"--database expects a campaign label=PATH, got: {entry!r}")
+        labels[label.strip()].database = Path(raw_path.strip()).expanduser()
 
     default_name = next(iter(caches))
     stop = threading.Event()

@@ -61,6 +61,14 @@ def parse_args() -> argparse.Namespace:
         help="Slurm array job id; enables sacct wait/wall-clock timing.",
     )
     parser.add_argument(
+        "--sacct-file",
+        type=Path,
+        default=None,
+        help="Read sacct output (-X -n -P --format=JobID,State,Submit,Start,End) "
+        "from this file instead of running sacct. The reporter writes it on the "
+        "host, because sacct is not available inside the container.",
+    )
+    parser.add_argument(
         "--condor-cluster-id",
         default="",
         help="HTCondor cluster id; enables live OSPool task completion counts.",
@@ -364,7 +372,12 @@ def parse_slurm_time(value: str) -> float | None:
         return None
 
 
-def collect_sacct(job_id: str) -> dict:
+def collect_sacct(job_id: str, sacct_file: Path | None = None) -> dict:
+    if sacct_file is not None and sacct_file.is_file():
+        try:
+            return parse_sacct_output(sacct_file.read_text())
+        except OSError as exc:
+            return {"available": False, "reason": f"cannot read {sacct_file}: {exc}"}
     command = [
         "sacct",
         "-j",
@@ -382,9 +395,12 @@ def collect_sacct(job_id: str) -> dict:
         return {"available": False, "reason": "sacct not available"}
     if completed.returncode != 0:
         return {"available": False, "reason": completed.stderr.strip()[:200]}
+    return parse_sacct_output(completed.stdout)
 
+
+def parse_sacct_output(text: str) -> dict:
     elements = []
-    for line in completed.stdout.splitlines():
+    for line in text.splitlines():
         parts = line.split("|")
         if len(parts) < 5:
             continue
@@ -1117,7 +1133,7 @@ def main() -> int:
     }
 
     if args.job_id:
-        report["slurm"] = collect_sacct(args.job_id)
+        report["slurm"] = collect_sacct(args.job_id, args.sacct_file)
     if args.condor_cluster_id:
         condor = collect_condor(args.condor_cluster_id, args.condor_host)
         report["condor"] = condor

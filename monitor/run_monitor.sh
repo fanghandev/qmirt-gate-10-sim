@@ -36,6 +36,8 @@ monitor_args=(
     --interval-s "$INTERVAL_S"
     --campaign-root "Brain SPECT (Expanse)=$BRAIN_MOUNT_ROOT"
     --campaign-root "Cardiac SPECT (OSPool)=$CARDIAC_ROOT"
+    # task states, pull/merge status and Slurm timing from the harvest timer's database
+    --database "Brain SPECT (Expanse)=${MONITOR_BRAIN_DATABASE:-${DATA_ROOT}/brain_spect/expanse_slurm_jobs.db}"
 )
 if [[ -n "$CARDIAC_CAMPAIGN" ]]; then
     monitor_args+=(--campaign "Cardiac benchmark=$CARDIAC_CAMPAIGN/progress.json")

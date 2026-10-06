@@ -71,13 +71,28 @@ export PYTHONPATH="$REPO_ROOT/qmirt/src${PYTHONPATH:+:$PYTHONPATH}"
 
 report_cmd=(python3 "$REPO_ROOT/payload/python/report_campaign_progress.py"
     --campaign-dir "$CAMPAIGN_DIR" --expected-tasks "$EXPECTED_TASKS" --output "$OUTPUT_FILE")
-[[ -n "$JOB_ID" ]] && report_cmd+=(--job-id "$JOB_ID")
+# sacct is not available inside the container: run it here on the host and hand the
+# output over in a file next to the report (the campaign directory is bound).
+SACCT_FILE=""
+if [[ -n "$JOB_ID" ]]; then
+    report_cmd+=(--job-id "$JOB_ID")
+    if command -v sacct >/dev/null 2>&1; then
+        SACCT_FILE="$(dirname "$OUTPUT_FILE")/.sacct_${JOB_ID}.txt"
+        report_cmd+=(--sacct-file "$SACCT_FILE")
+    fi
+fi
 [[ -n "$GEOMETRY_WRL" ]] && report_cmd+=(--geometry-wrl "$GEOMETRY_WRL")
 
 if [[ -f "$CONTAINER_SIF" ]] && [[ -n "$CONTAINER_EXEC" ]]; then
     report_cmd=("$CONTAINER_EXEC" exec --bind "$REPO_ROOT:$REPO_ROOT" --bind "$CAMPAIGN_DIR:$CAMPAIGN_DIR" \
         "$CONTAINER_SIF" "${report_cmd[@]}")
 fi
+
+refresh_sacct() {
+    [[ -n "$SACCT_FILE" ]] || return 0
+    sacct -j "$JOB_ID" -X -n -P --format=JobID,State,Submit,Start,End \
+        > "${SACCT_FILE}.tmp" 2>/dev/null && mv -f "${SACCT_FILE}.tmp" "$SACCT_FILE" || true
+}
 
 job_is_active() {
     [[ -n "$WATCH_JOB_ID" ]] || return 1
@@ -88,10 +103,12 @@ job_is_active() {
 start_ts="$(date +%s)"
 echo "Progress reporter: campaign=$CAMPAIGN_DIR output=$OUTPUT_FILE interval=${INTERVAL_S}s watch_job=${WATCH_JOB_ID:-none}"
 while true; do
+    refresh_sacct
     "${report_cmd[@]}" || echo "Warning: report generation failed, will retry next interval" >&2
 
     if [[ -n "$WATCH_JOB_ID" ]] && ! job_is_active; then
         echo "Watched job ${WATCH_JOB_ID} left the queue; writing one final report and exiting."
+        refresh_sacct
         "${report_cmd[@]}" || true
         break
     fi
