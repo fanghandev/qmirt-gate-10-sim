@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import socket
 from pathlib import Path
 
 import numpy as np
@@ -268,7 +270,11 @@ def main() -> int:
         )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = args.output.with_suffix(args.output.suffix + ".tmp")
+    # Every task of a campaign writes this file at start-up; a shared temporary name
+    # let one task rename another's file away (FileNotFoundError, task failed).
+    temporary_path = args.output.with_suffix(
+        f"{args.output.suffix}.{socket.gethostname()}.{os.getpid()}.tmp"
+    )
     temporary_path.write_text(json.dumps(provenance, indent=2) + "\n")
     temporary_path.replace(args.output)
     return 0
