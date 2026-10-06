@@ -53,6 +53,13 @@ def sum_primaries(chunk_dir: Path) -> tuple[int, int]:
     return total, loops_done
 
 
+def metadata_has_primaries(metadata_path: Path) -> bool:
+    """True when every resolution already records a nonzero simulated_primaries."""
+    metadata = read_json(metadata_path) or {}
+    entries = list(metadata.get("resolutions", {}).values())
+    return bool(entries) and all(int(e.get("simulated_primaries") or 0) > 0 for e in entries)
+
+
 def patch_metadata_primaries(
     metadata_path: Path, simulated_primaries: int, apply: bool
 ) -> bool:
@@ -117,6 +124,12 @@ def process_campaign(campaign_dir: Path, apply: bool) -> None:
         ]
         metadata_path = task_dir / "combined_srm_metadata.json"
         if any(p.is_file() for p in final_srms) and metadata_path.is_file():
+            if (task_dir / "TASK_COMPLETE.json").is_file() and metadata_has_primaries(
+                metadata_path
+            ):
+                # Combined on the cluster from all its loops: its count is authoritative.
+                # A local srm_chunks/ may be a stale partial mirror (fewer loops).
+                continue
             if patch_metadata_primaries(metadata_path, simulated_primaries, apply):
                 print(
                     f"{task_dir.name}: patched simulated_primaries -> {simulated_primaries} "

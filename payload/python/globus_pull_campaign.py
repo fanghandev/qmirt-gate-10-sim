@@ -128,6 +128,12 @@ def parse_args() -> argparse.Namespace:
         help="Skip SRM matrix statistics in the report (much faster for frequent polling).",
     )
     parser.add_argument(
+        "--complete-only",
+        action="store_true",
+        help="Mount harvests: pull finished tasks only, without mirroring the loop "
+        "chunks of running tasks (that mirror is slow over sshfs).",
+    )
+    parser.add_argument(
         "--update-db",
         action="store_true",
         help="After each pull, record task states and counts in the local SQLite "
@@ -359,6 +365,11 @@ def pull_complete_task(mount_task: Path, local_task: Path) -> bool:
     wall_time_name = f"{mount_task.name}_wall_time.txt"
     if (mount_task / wall_time_name).is_file():
         names.append(wall_time_name)
+    # A partial mirror of srm_chunks from while the task ran is now stale (fewer loops
+    # than the final SRMs); drop it so nothing recomputes counts from it.
+    stale_chunks = local_task / "srm_chunks"
+    if stale_chunks.is_dir():
+        shutil.rmtree(stale_chunks)
     for name in names:
         source = mount_task / name
         if not source.is_file():
@@ -404,6 +415,7 @@ def harvest_campaign(
     *,
     max_tasks: int = 0,
     dry_run: bool = False,
+    complete_only: bool = False,
 ) -> dict:
     """Pull one campaign shard's ready tasks straight off a local mount."""
     ledger_path = local_campaign / LEDGER_NAME
@@ -446,6 +458,9 @@ def harvest_campaign(
             continue
 
         # state == "partial": only re-pull once new loops have finished remotely.
+        if complete_only:
+            in_flight_count += 1
+            continue
         loops_done = loops_done_count(task_dir)
         if recorded and recorded.get("loops_done") == loops_done:
             continue
@@ -501,6 +516,7 @@ def harvest_root(
     no_srm_stats: bool = False,
     update_db: bool = False,
     db: str | None = None,
+    complete_only: bool = False,
 ) -> dict[str, dict]:
     """Harvest every started campaign shard matching *campaign_glob* under *mount_root*."""
     summary: dict[str, dict] = {}
@@ -515,7 +531,11 @@ def harvest_root(
         print(f"== {name} ==")
         local_campaign = local_root / name
         result = harvest_campaign(
-            mount_campaign, local_campaign, max_tasks=max_tasks, dry_run=dry_run
+            mount_campaign,
+            local_campaign,
+            max_tasks=max_tasks,
+            dry_run=dry_run,
+            complete_only=complete_only,
         )
         print(
             f"  complete={result['complete']} partial={result['partial']} "
@@ -684,6 +704,7 @@ def main() -> int:
             no_srm_stats=args.no_srm_stats,
             update_db=args.update_db,
             db=args.db,
+            complete_only=args.complete_only,
         )
         return 0
 
