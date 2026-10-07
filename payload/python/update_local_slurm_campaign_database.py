@@ -81,7 +81,7 @@ def query_slurm(job_id: str) -> list[tuple]:
         "-X",
         "-n",
         "-P",
-        "--format=JobID,State,Submit,Start,End,ExitCode",
+        "--format=JobID,State,Submit,Start,End,ExitCode,Eligible",
     ]
     try:
         result = subprocess.run(
@@ -95,9 +95,9 @@ def query_slurm(job_id: str) -> list[tuple]:
     rows = []
     for line in result.stdout.splitlines():
         fields = line.split("|")
-        if len(fields) != 6:
+        if len(fields) != 7:
             continue
-        array_job_id, state, submit, start, end, exit_code = fields
+        array_job_id, state, submit, start, end, exit_code, eligible = fields
         task_id = parse_task_id(array_job_id, "")
         if task_id is None:
             continue
@@ -110,6 +110,7 @@ def query_slurm(job_id: str) -> list[tuple]:
                 parse_epoch(start),
                 parse_epoch(end),
                 exit_code,
+                parse_epoch(eligible),
             )
         )
     return rows
@@ -169,6 +170,7 @@ def init_db(path: Path) -> sqlite3.Connection:
             start_epoch INTEGER,
             end_epoch INTEGER,
             exit_code TEXT,
+            eligible_epoch INTEGER,
             campaign_name TEXT,
             task_name TEXT,
             primaries INTEGER,
@@ -182,6 +184,7 @@ def init_db(path: Path) -> sqlite3.Connection:
     )
     columns = {row[1] for row in conn.execute("PRAGMA table_info(slurm_jobs)")}
     for name, definition in {
+        "eligible_epoch": "INTEGER",
         "campaign_name": "TEXT",
         "task_name": "TEXT",
         "primaries": "INTEGER",
@@ -227,14 +230,15 @@ def upsert_slurm_rows(
         """
         INSERT INTO slurm_jobs
             (job_id, array_task_id, state, submit_epoch, start_epoch, end_epoch,
-             exit_code, campaign_name, task_name)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             exit_code, eligible_epoch, campaign_name, task_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(job_id, array_task_id) DO UPDATE SET
             state=excluded.state,
             submit_epoch=COALESCE(excluded.submit_epoch, slurm_jobs.submit_epoch),
             start_epoch=COALESCE(excluded.start_epoch, slurm_jobs.start_epoch),
             end_epoch=COALESCE(excluded.end_epoch, slurm_jobs.end_epoch),
             exit_code=excluded.exit_code,
+            eligible_epoch=COALESCE(excluded.eligible_epoch, slurm_jobs.eligible_epoch),
             campaign_name=excluded.campaign_name,
             task_name=excluded.task_name
         """,
@@ -277,6 +281,10 @@ def update_pulled_tasks(
                  primaries, raw_singles, accepted_singles, is_pulled)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(job_id, array_task_id) DO UPDATE SET
+                -- a completed task on disk wins over sacct's record of an earlier
+                -- failed attempt (the task was rerun as a separate job)
+                state=CASE WHEN excluded.state = 'COMPLETED' THEN 'COMPLETED'
+                           ELSE slurm_jobs.state END,
                 campaign_name=excluded.campaign_name,
                 task_name=excluded.task_name,
                 primaries=excluded.primaries,

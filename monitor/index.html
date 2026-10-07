@@ -792,11 +792,11 @@
           fmtInt(t.failed) + " failed · " +
           fmtSci(t.completed_primaries) + " primaries in completed tasks · updated " +
           (ago == null ? "—" : fmtDuration(ago) + " ago") +
-          " by the harvest timer (Slurm states need the ssh socket; waits include waiting for the previous part)</div>" +
+          " by the harvest timer (Slurm states need the ssh socket; queue wait counts from when Slurm made a task eligible)</div>" +
           '<div style="overflow-x:auto;margin-top:8px"><table><thead><tr>' +
           '<th>Part</th><th>Tasks</th><th style="text-align:left">Slurm / task state</th>' +
           "<th>Pulled</th><th>Merged</th><th>Primaries (completed)</th>" +
-          "<th>Wait from submit (mean)</th><th>Run, completed (mean)</th>" +
+          "<th>Queue wait (mean)</th><th>Run, completed (mean)</th>" +
           '<th style="text-align:left">Failed tasks</th></tr></thead><tbody>' +
           rows +
           "</tbody></table></div>" +

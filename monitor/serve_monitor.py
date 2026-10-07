@@ -32,6 +32,125 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
+SNAPSHOT_LABELS = ("1mm", "1p5mm", "2mm")
+_SNAPSHOT_CACHE: dict = {}
+
+
+def _histogram(values, bin_count: int = 24) -> dict:
+    """Log-binned histogram, as report_campaign_progress.histogram_counts."""
+    import numpy as np
+
+    values = np.asarray(values)
+    if values.size == 0:
+        return {"edges": [], "values": []}
+    maximum = int(values.max())
+    if maximum <= 1:
+        return {"edges": [1, 2], "values": [int(values.size)]}
+    edges = np.unique(
+        np.round(np.logspace(0, np.log10(maximum + 1), bin_count + 1)).astype(np.int64)
+    )
+    counts, _ = np.histogram(values, bins=edges)
+    return {"edges": edges.tolist(), "values": counts.tolist()}
+
+
+def _sparse_plane(full, grid_size: int, max_points: int) -> dict:
+    import numpy as np
+
+    nonzero = np.flatnonzero(full)
+    truncated = False
+    if nonzero.size > max_points:
+        nonzero = nonzero[np.argpartition(full[nonzero], -max_points)[-max_points:]]
+        truncated = True
+    values = full[nonzero]
+    return {
+        "i": (nonzero // grid_size).astype(np.int32).tolist(),
+        "j": (nonzero % grid_size).astype(np.int32).tolist(),
+        "v": values.astype(np.int64).tolist(),
+        "nonzero_bins": int(np.count_nonzero(full)),
+        "max_value": int(values.max()) if values.size else 0,
+        "total": int(full.sum()),
+        "truncated": truncated,
+    }
+
+
+def snapshot_srm(root: Path, parts: list[str], max_points: int = 20000) -> dict:
+    """SRM summaries for the dashboard from the parts' additive projection snapshots
+    (payload/python/srm_projection_snapshot.py), summed over parts. Element-level
+    statistics need the merged SRM and are left empty."""
+    import numpy as np
+
+    result = {}
+    for label in SNAPSHOT_LABELS:
+        paths = [root / part / f"srm_snapshot_{label}.npz" for part in parts]
+        paths = [path for path in paths if path.is_file()]
+        if not paths:
+            result[label] = {"available": False, "reason": "no projection snapshots yet"}
+            continue
+        key = tuple((str(path), path.stat().st_mtime) for path in paths)
+        cached = _SNAPSHOT_CACHE.get(label)
+        if cached and cached[0] == key:
+            result[label] = cached[1]
+            continue
+        sums: dict = {}
+        tasks = 0
+        meta: dict = {}
+        for path in paths:
+            with np.load(path) as data:
+                for name in ("xy", "yz", "zx", "detector_sums", "voxel_sums"):
+                    array = data[name].astype(np.int64)
+                    sums[name] = array if name not in sums else sums[name] + array
+                tasks += int(data["tasks"].size)
+                meta = json.loads(str(data["meta"]))
+        g = int(meta["grid_size"])
+        detector = sums["detector_sums"].reshape(-1)
+        voxels = sums["voxel_sums"]
+        hit_detectors = detector[detector > 0]
+        hit_voxels = voxels[voxels > 0]
+        per_head = detector.reshape(-1, 625)
+        crystals = []
+        for head, totals in enumerate(per_head):
+            hit = np.flatnonzero(totals)
+            if hit.size:
+                crystals.append({
+                    "id": head,
+                    "total_counts": int(totals.sum()),
+                    "pixels_hit": int(hit.size),
+                    "pixel_ids": hit.astype(np.int32).tolist(),
+                    "pixel_counts": totals[hit].tolist(),
+                })
+        summary = {
+            "available": True,
+            "source": "projection snapshots",
+            "path": None,  # no SRM file behind these sums: per-pixel queries need a merge
+            "snapshot_parts": len(paths),
+            "snapshot_tasks": tasks,
+            "grid_size": g,
+            "voxel_size_mm": meta.get("voxel_size_mm"),
+            "hist_range": meta.get("hist_range"),
+            "total_counts": int(detector.sum()),
+            "nonzero_elements": None,
+            "max_element_counts": None,
+            "mean_element_counts": None,
+            "median_element_counts": None,
+            "distinct_detector_pixels": int(hit_detectors.size),
+            "distinct_crystals": len(crystals),
+            "distinct_voxels": int(hit_voxels.size),
+            "counts_per_detector_mean": float(hit_detectors.mean()) if hit_detectors.size else None,
+            "counts_per_voxel_mean": float(hit_voxels.mean()) if hit_voxels.size else None,
+            "element_count_histogram": {"edges": [], "values": []},
+            "detector_total_histogram": _histogram(hit_detectors),
+            "voxel_total_histogram": _histogram(hit_voxels),
+            "detector_map": {"pixels_per_crystal": 625, "pixel_grid": 25, "crystals": crystals},
+            "hottest_elements": [],
+            "projections": {
+                name: _sparse_plane(sums[name], g, max_points) for name in ("xy", "yz", "zx")
+            },
+        }
+        _SNAPSHOT_CACHE[label] = (key, summary)
+        result[label] = summary
+    return result
+
+
 def database_summary(db_path: Path, campaigns: list[str]) -> dict:
     """Per-part task states, pull/merge status, counts and Slurm timing from the
     local job database (payload/python/update_local_slurm_campaign_database.py)."""
@@ -49,7 +168,7 @@ def database_summary(db_path: Path, campaigns: list[str]) -> dict:
             rows = conn.execute(
                 """SELECT array_task_id, state, exit_code, submit_epoch, start_epoch,
                           end_epoch, primaries, raw_singles, accepted_singles,
-                          is_pulled, is_merged
+                          is_pulled, is_merged, eligible_epoch
                    FROM slurm_jobs WHERE campaign_name = ?""",
                 (campaign,),
             ).fetchall()
@@ -57,7 +176,9 @@ def database_summary(db_path: Path, campaigns: list[str]) -> dict:
             for row in rows:
                 states[row[1] or "UNKNOWN"] = states.get(row[1] or "UNKNOWN", 0) + 1
             done = [r for r in rows if r[1] == "COMPLETED" and r[9]]
-            waits = [r[4] - r[3] for r in rows if r[3] and r[4]]
+            # from eligibility (after the previous part), not submission; older rows
+            # without it fall back to the submit time
+            waits = [r[4] - (r[11] or r[3]) for r in rows if (r[11] or r[3]) and r[4]]
             runs = [r[5] - r[4] for r in rows if r[4] and r[5] and r[1] == "COMPLETED"]
             submits = [r[3] for r in rows if r[3]]
             ends = [r[5] for r in rows if r[5]]
@@ -416,12 +537,47 @@ class ProgressCache:
             [self.local_path.parent.name] if self.local_path else []
         )
         try:
+            # projection snapshots live next to the database, in the pulled parts
+            snapshots = snapshot_srm(self.database.parent, campaigns)
+            if any(entry.get("available") for entry in snapshots.values()):
+                data["srm"] = snapshots
+                data["srm_labels"] = list(SNAPSHOT_LABELS)
+                data["group_srm_note"] = (
+                    "SRM views are summed from per-part projection snapshots of all "
+                    "pulled complete tasks; element-level statistics need a merged SRM."
+                )
+        except (OSError, ValueError, KeyError) as exc:
+            data["srm_snapshot_error"] = f"{type(exc).__name__}: {exc}"
+        try:
             data["database"] = database_summary(self.database, campaigns)
             data["database"]["combined_sets"] = merge_state(
                 self.database, data.get("campaign_group_id") or self.group_id
             )
+            self._attach_pixel_source(data, campaigns)
         except sqlite3.Error as exc:
             data["database"] = {"available": False, "reason": f"sqlite: {exc}"}
+
+    def _attach_pixel_source(self, data: dict, campaigns: list[str]) -> None:
+        """Per-pixel queries need an SRM: use the newest merged one (the latest
+        combined set of complete parts, else the newest merged single part)."""
+        root = self.database.parent
+        candidates = [Path(entry["output"]) for entry in data["database"]["combined_sets"]]
+        candidates += [root / name for name in reversed(campaigns)]
+        for candidate in candidates:
+            metadata = candidate / "combined_srm_metadata.json"
+            if not metadata.is_file():
+                continue
+            try:
+                merged = json.loads(metadata.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if merged.get("layout") != "per_head_csr":
+                continue
+            for label, entry in (data.get("srm") or {}).items():
+                if entry.get("available") and label in merged.get("resolutions", {}):
+                    entry["path"] = str(candidate / f"final_srm_{label}.npz")
+                    entry["pixel_source"] = candidate.name
+            return
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -473,7 +629,12 @@ def make_handler(caches: dict[str, ProgressCache], default_name: str):
             if cache is None:
                 self._send_json(404, {"available": False, "error": "unknown campaign"})
                 return
-            if len(cache.group_paths) > 1:
+            with cache.lock:
+                grouped_has_srm = any(
+                    (entry or {}).get("path")
+                    for entry in (cache.payload.get("srm") or {}).values()
+                )
+            if len(cache.group_paths) > 1 and not grouped_has_srm:
                 self._send_json(
                     409,
                     {

@@ -385,7 +385,7 @@ def collect_sacct(job_id: str, sacct_file: Path | None = None) -> dict:
         "-X",
         "-n",
         "-P",
-        "--format=JobID,State,Submit,Start,End",
+        "--format=JobID,State,Submit,Start,End,Eligible",
     ]
     try:
         completed = subprocess.run(
@@ -405,12 +405,18 @@ def parse_sacct_output(text: str) -> dict:
         if len(parts) < 5:
             continue
         raw_id, state, submit, start, end = parts[:5]
+        submitted = parse_slurm_time(submit)
+        # Queue wait starts when Slurm makes the job eligible (after its dependency,
+        # e.g. the previous campaign part); before that it is a hold, not a wait.
+        # Without the Eligible column (older sacct files) fall back to Submit.
+        eligible = parse_slurm_time(parts[5]) if len(parts) > 5 else submitted
         elements.append(
             {
                 "job_id": raw_id,
                 "task_id": raw_id.split("_")[-1] if "_" in raw_id else None,
                 "state": state.split()[0],
-                "submit": parse_slurm_time(submit),
+                "submit": submitted,
+                "eligible": eligible,
                 "start": parse_slurm_time(start),
                 "end": parse_slurm_time(end),
             }
@@ -425,11 +431,11 @@ def parse_sacct_output(text: str) -> dict:
     states: dict[str, int] = {}
     for element in elements:
         states[element["state"]] = states.get(element["state"], 0) + 1
-        submit, start, end = element["submit"], element["start"], element["end"]
-        if submit is not None:
+        eligible, start, end = element["eligible"], element["start"], element["end"]
+        if eligible is not None:
             wait_end = start if start is not None else now
-            wait_intervals.append((submit, wait_end))
-            waits.append(max(0.0, wait_end - submit))
+            wait_intervals.append((eligible, wait_end))
+            waits.append(max(0.0, wait_end - eligible))
         if start is not None:
             run_intervals.append((start, end if end is not None else now))
 
@@ -460,10 +466,10 @@ def parse_sacct_output(text: str) -> dict:
         "wait_seconds_per_task": {
             e["task_id"]: max(
                 0.0,
-                (e["start"] if e["start"] is not None else now) - e["submit"],
+                (e["start"] if e["start"] is not None else now) - e["eligible"],
             )
             for e in elements
-            if e["submit"] is not None and e["task_id"] is not None
+            if e["eligible"] is not None and e["task_id"] is not None
         },
     }
 

@@ -90,7 +90,7 @@ fi
 
 refresh_sacct() {
     [[ -n "$SACCT_FILE" ]] || return 0
-    sacct -j "$JOB_ID" -X -n -P --format=JobID,State,Submit,Start,End \
+    sacct -j "$JOB_ID" -X -n -P --format=JobID,State,Submit,Start,End,Eligible \
         > "${SACCT_FILE}.tmp" 2>/dev/null && mv -f "${SACCT_FILE}.tmp" "$SACCT_FILE" || true
 }
 

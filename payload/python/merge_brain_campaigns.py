@@ -4,8 +4,7 @@ import re
 import sqlite3
 
 import numpy as np
-import polars as pl
-from scipy.sparse import coo_matrix, save_npz
+from scipy.sparse import coo_matrix, csr_matrix, save_npz
 
 
 def scan_brain_campaigns(directory):
@@ -61,117 +60,79 @@ def mark_tasks_merged(db_path: str, campaign: str, task_ids: list[int]) -> None:
         )
 
 
-def create_per_resolution_srm_pl_df(
+def accumulate_per_head(
     task_ids: list[int],
-    resolution_id: int,
-    data_dir: str,
-    *,
-    n_pixels: int,
-):
-    from tqdm import tqdm
-
-    resolution_name_stems = ["1mm", "1p5mm", "2mm"]
-    srm_fname = f"final_srm_{resolution_name_stems[resolution_id]}.npz"
-    global_df = None
-    chunk_size = 20  # Process 20 tasks at a time
-
-    progress = tqdm(
-        total=len(task_ids),
-        desc=f"{resolution_name_stems[resolution_id]} tasks",
-        unit="task",
-        dynamic_ncols=True,
-        mininterval=1.0,
-        leave=True,
-    )
-    # Split task_ids into chunks of 20 while keeping one stable screen bar.
-    for i in range(0, len(task_ids), chunk_size):
-        batch_task_ids = task_ids[i : i + chunk_size]
-        batch_df_list = []
-
-        for task_id in batch_task_ids:
-            # 1. Load and process exactly as before
-            file_path = os.path.join(data_dir, f"task_{task_id}", srm_fname)
-            with np.load(file_path) as data:
-                coords, values, grid_size = (
-                    data["coords"],
-                    data["counts"],
-                    int(data["grid_size"][0]),
-                )
-
-            p_id = coords[:, 0] * n_pixels + coords[:, 1]
-            v_id = (
-                coords[:, 2] * (grid_size**2) + coords[:, 3] * grid_size + coords[:, 4]
-            )
-
-            # Local reduction
-            df_chunk = pl.DataFrame({"p_id": p_id, "v_id": v_id, "value": values})
-            batch_df_list.append(
-                df_chunk.group_by(["p_id", "v_id"]).agg(pl.col("value").sum())
-            )
-            progress.update(1)
-
-        # 2. Batch Reduction
-        batch_df = (
-            pl.concat(batch_df_list)
-            .group_by(["p_id", "v_id"])
-            .agg(pl.col("value").sum())
-        )
-
-        # 3. Merge into the Global DataFrame
-        if global_df is None:
-            global_df = batch_df
-        else:
-            global_df = (
-                pl.concat([global_df, batch_df])
-                .group_by(["p_id", "v_id"])
-                .agg(pl.col("value").sum())
-            )
-
-    progress.close()
-
-    # Derive h_id at the very end
-    if global_df is None:
-        return pl.DataFrame(
-            {
-                "p_id": pl.Series([], dtype=pl.Int64),
-                "v_id": pl.Series([], dtype=pl.Int64),
-                "value": pl.Series([], dtype=pl.Int64),
-                "h_id": pl.Series([], dtype=pl.Int64),
-            }
-        )
-    return global_df.with_columns((pl.col("p_id") // n_pixels).alias("h_id"))
-
-
-def write_per_head_srms(
-    global_df: pl.DataFrame,
-    output_dir: str,
     resolution_stem: str,
+    data_dir: str,
     *,
     n_heads: int,
     n_pixels: int,
     grid_size: int,
+    tasks_per_batch: int = 4,
+) -> list[csr_matrix]:
+    """Sum the tasks' sparse SRMs into one int64 CSR matrix per head.
+
+    Tasks are read a few at a time and their entries added head by head, so memory
+    follows the merged matrices (unique pixel-voxel pairs), not the sum of every
+    task's entries: a 288 mm part is 64 tasks x ~54M entries at 1 mm, which the
+    earlier all-tasks-in-one-table merge could not hold.
+    """
+    from tqdm import tqdm
+
+    num_voxels = grid_size**3
+    shape = (n_pixels, num_voxels)
+    heads: list[csr_matrix] = [csr_matrix(shape, dtype=np.int64) for _ in range(n_heads)]
+    srm_fname = f"final_srm_{resolution_stem}.npz"
+    progress = tqdm(total=len(task_ids), desc=f"{resolution_stem} tasks", unit="task",
+                    dynamic_ncols=True, mininterval=1.0)
+    for start in range(0, len(task_ids), tasks_per_batch):
+        pieces: list[list[tuple[np.ndarray, np.ndarray, np.ndarray]]] = [[] for _ in range(n_heads)]
+        for task_id in task_ids[start : start + tasks_per_batch]:
+            with np.load(os.path.join(data_dir, f"task_{task_id}", srm_fname)) as data:
+                coords = data["coords"]
+                counts = data["counts"].astype(np.int64, copy=False)
+                if int(data["grid_size"][0]) != grid_size:
+                    raise ValueError(f"task_{task_id}: grid size differs from {grid_size}")
+            head = coords[:, 0].astype(np.int64)
+            pixel = coords[:, 1].astype(np.int64)
+            voxel = (
+                coords[:, 2].astype(np.int64) * grid_size**2
+                + coords[:, 3].astype(np.int64) * grid_size
+                + coords[:, 4].astype(np.int64)
+            )
+            del coords
+            order = np.argsort(head, kind="stable")
+            bounds = np.searchsorted(head[order], np.arange(n_heads + 1))
+            for h in range(n_heads):
+                idx = order[bounds[h] : bounds[h + 1]]
+                if idx.size:
+                    pieces[h].append((pixel[idx], voxel[idx], counts[idx]))
+            del head, pixel, voxel, counts, order
+            progress.update(1)
+        for h in range(n_heads):
+            if not pieces[h]:
+                continue
+            rows = np.concatenate([piece[0] for piece in pieces[h]])
+            cols = np.concatenate([piece[1] for piece in pieces[h]])
+            vals = np.concatenate([piece[2] for piece in pieces[h]])
+            pieces[h] = []
+            batch = coo_matrix((vals, (rows, cols)), shape=shape, dtype=np.int64).tocsr()
+            batch.sum_duplicates()
+            heads[h] = heads[h] + batch
+    progress.close()
+    return heads
+
+
+def write_per_head_srms(
+    heads: list[csr_matrix],
+    output_dir: str,
+    resolution_stem: str,
 ) -> list[dict]:
     """Write one int64 CSR SRM per head for one resolution."""
-    if n_heads <= 0 or n_pixels <= 0 or grid_size <= 0:
-        raise ValueError("n_heads, n_pixels, and grid_size must be positive")
-
     output_path = os.path.abspath(output_dir)
     os.makedirs(output_path, exist_ok=True)
-    num_voxels = grid_size**3
     head_metadata = []
-    for head_id in range(n_heads):
-        head_rows = global_df.filter(pl.col("h_id") == head_id)
-        matrix = coo_matrix(
-            (
-                head_rows["value"].to_numpy(),
-                (
-                    (head_rows["p_id"] - head_id * n_pixels).to_numpy(),
-                    head_rows["v_id"].to_numpy(),
-                ),
-            ),
-            shape=(n_pixels, num_voxels),
-            dtype=np.int64,
-        ).tocsr()
+    for head_id, matrix in enumerate(heads):
         matrix.sum_duplicates()
         matrix.eliminate_zeros()
         filename = f"final_srm_{resolution_stem}_head_{head_id + 1:02d}.npz"
@@ -185,6 +146,15 @@ def write_per_head_srms(
             }
         )
     return head_metadata
+
+
+def task_counts_total(task_ids: list[int], data_dir: str, resolution_stem: str) -> int:
+    """Sum of the tasks' counts, to check the merge lost nothing."""
+    total = 0
+    for task_id in task_ids:
+        with np.load(os.path.join(data_dir, f"task_{task_id}", f"final_srm_{resolution_stem}.npz")) as data:
+            total += int(data["counts"].sum(dtype=np.int64))
+    return total
 
 
 def merge_resolution_metadata(
@@ -339,17 +309,22 @@ def main():
     for resolution_id, (resolution_stem, grid_size) in enumerate(
         zip(resolution_name_stems, grid_sizes)
     ):
-        global_df = create_per_resolution_srm_pl_df(
-            valid_task_ids, resolution_id, directory, n_pixels=args.pixels
-        )
-        head_metadata = write_per_head_srms(
-            global_df,
-            output_dir,
+        heads = accumulate_per_head(
+            valid_task_ids,
             resolution_stem,
+            directory,
             n_heads=args.heads,
             n_pixels=args.pixels,
             grid_size=grid_size,
         )
+        head_metadata = write_per_head_srms(heads, output_dir, resolution_stem)
+        del heads
+        merged_counts = sum(entry["accumulated_counts"] for entry in head_metadata)
+        expected_counts = task_counts_total(valid_task_ids, directory, resolution_stem)
+        if merged_counts != expected_counts:
+            raise ValueError(
+                f"{resolution_stem}: merged counts {merged_counts} != task total {expected_counts}"
+            )
         metadata["resolutions"][resolution_stem] = merge_resolution_metadata(
             valid_task_ids,
             directory,
