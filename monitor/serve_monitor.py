@@ -73,6 +73,19 @@ def _sparse_plane(full, grid_size: int, max_points: int) -> dict:
     }
 
 
+def _task_energy_window(part_dir: Path, label: str) -> list | None:
+    """Energy window stored in a task's SRM file (npz members are read lazily)."""
+    import numpy as np
+
+    for srm_path in sorted(part_dir.glob(f"task_*/final_srm_{label}.npz"))[:1]:
+        try:
+            with np.load(srm_path) as data:
+                return [float(data["energy_min_kev"][0]), float(data["energy_max_kev"][0])]
+        except (OSError, KeyError, ValueError):
+            return None
+    return None
+
+
 def snapshot_srm(root: Path, parts: list[str], max_points: int = 20000) -> dict:
     """SRM summaries for the dashboard from the parts' additive projection snapshots
     (payload/python/srm_projection_snapshot.py), summed over parts. Element-level
@@ -93,6 +106,7 @@ def snapshot_srm(root: Path, parts: list[str], max_points: int = 20000) -> dict:
             continue
         sums: dict = {}
         tasks = 0
+        chunks = 0
         meta: dict = {}
         for path in paths:
             with np.load(path) as data:
@@ -101,6 +115,9 @@ def snapshot_srm(root: Path, parts: list[str], max_points: int = 20000) -> dict:
                     sums[name] = array if name not in sums else sums[name] + array
                 tasks += int(data["tasks"].size)
                 meta = json.loads(str(data["meta"]))
+                chunks += int(meta.get("chunk_count") or 0)
+        if not meta.get("energy_window_kev"):  # snapshots written before this field
+            meta["energy_window_kev"] = _task_energy_window(paths[0].parent, label)
         g = int(meta["grid_size"])
         detector = sums["detector_sums"].reshape(-1)
         voxels = sums["voxel_sums"]
@@ -127,6 +144,10 @@ def snapshot_srm(root: Path, parts: list[str], max_points: int = 20000) -> dict:
             "grid_size": g,
             "voxel_size_mm": meta.get("voxel_size_mm"),
             "hist_range": meta.get("hist_range"),
+            "extent_mm": meta.get("hist_range"),
+            "energy_window_kev": meta.get("energy_window_kev"),
+            "input_count": tasks,
+            "chunk_count": chunks or None,
             "total_counts": int(detector.sum()),
             "nonzero_elements": None,
             "max_element_counts": None,
@@ -142,8 +163,11 @@ def snapshot_srm(root: Path, parts: list[str], max_points: int = 20000) -> dict:
             "voxel_total_histogram": _histogram(hit_voxels),
             "detector_map": {"pixels_per_crystal": 625, "pixel_grid": 25, "crystals": crystals},
             "hottest_elements": [],
+            # dense sums (every FOV pixel is hit), so send all bins: a cap keeps only
+            # the strongest and cuts the FOV edge away (<= g*g = 82,944 at 1 mm)
             "projections": {
-                name: _sparse_plane(sums[name], g, max_points) for name in ("xy", "yz", "zx")
+                name: _sparse_plane(sums[name], g, max(max_points, g * g))
+                for name in ("xy", "yz", "zx")
             },
         }
         _SNAPSHOT_CACHE[label] = (key, summary)

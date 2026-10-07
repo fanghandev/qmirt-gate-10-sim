@@ -53,6 +53,9 @@ def task_sums(path: Path) -> dict:
             "grid_size": g,
             "voxel_size_mm": float(data["voxel_size_mm"][0]) if "voxel_size_mm" in data else None,
             "hist_range": data["hist_range"].astype(float).tolist() if "hist_range" in data else None,
+            "energy_window_kev": [float(data["energy_min_kev"][0]), float(data["energy_max_kev"][0])]
+            if "energy_min_kev" in data and "energy_max_kev" in data else None,
+            "chunk_count": int(data["chunk_count"][0]) if "chunk_count" in data else 0,
         }
     x = coords[:, 2].astype(np.int64)
     y = coords[:, 3].astype(np.int64)
@@ -98,7 +101,8 @@ def update_part(part_dir: Path, label: str, workers: int) -> tuple[int, int]:
     tasks = complete_tasks(part_dir, label)
     snap = load_snapshot(path)
     included = set(snap["tasks"].tolist()) if snap is not None else set()
-    if not included <= set(tasks):  # a task vanished locally: rebuild from scratch
+    if not included <= set(tasks) or (snap is not None and "chunk_count" not in snap["meta"]):
+        # a task vanished locally, or the snapshot predates a field: rebuild
         snap, included = None, set()
     new = [t for t in tasks if t not in included]
     if not new:
@@ -113,13 +117,15 @@ def update_part(part_dir: Path, label: str, workers: int) -> tuple[int, int]:
         ):
             if sums is None:
                 sums = {k: result[k] for k in keys}
-                meta = {k: result[k] for k in ("grid_size", "voxel_size_mm", "hist_range")}
+                meta = {k: result[k] for k in ("grid_size", "voxel_size_mm", "hist_range",
+                                               "energy_window_kev")}
             else:
                 if result["grid_size"] != meta["grid_size"]:
                     raise ValueError(f"{part_dir.name}: grid size differs between tasks")
                 for k in keys:
                     sums[k] += result[k]
             total += result["total_counts"]
+            meta["chunk_count"] = int(meta.get("chunk_count", 0)) + result["chunk_count"]
     meta["total_counts"] = total
     meta["label"] = label
     all_tasks = sorted(included | set(new))

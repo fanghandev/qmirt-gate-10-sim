@@ -1280,7 +1280,7 @@
             fmtNum(srm.voxel_size_mm) + " mm",
             srm.grid_size +
               "\u00b3 grid \u00b7 FOV " +
-              fmtNum(srm.extent_mm[1] - srm.extent_mm[0]) +
+              (srm.extent_mm ? fmtNum(srm.extent_mm[1] - srm.extent_mm[0]) : "\u2014") +
               " mm",
           ) +
           card(
@@ -1309,7 +1309,7 @@
             fmtInt(srm.chunk_count),
             fmtInt(srm.input_count) +
               " merged inputs \u00b7 " +
-              srm.energy_window_kev.map((v) => fmtNum(v, 1)).join("\u2013") +
+              (srm.energy_window_kev || []).map((v) => fmtNum(v, 1)).join("\u2013") +
               " keV",
           ) +
           "</section>" +
