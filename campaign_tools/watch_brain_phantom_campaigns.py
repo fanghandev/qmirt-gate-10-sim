@@ -59,11 +59,12 @@ def remote(host, command, timeout=300) -> tuple[int, str]:
 # OSPool
 # ---------------------------------------------------------------------------------------
 def ospool_campaigns(glob: str) -> dict:
-    code, out = remote("ospool", f"cd {OSPOOL_ROOT} && for c in {glob}; do [ -d \"$c\" ] && echo \"$c $(cat $c/condor_submit.txt 2>/dev/null"
-                                 f" | grep -o 'cluster [0-9]*' | tr -dc 0-9)\"; done")
+    """campaign -> [first cluster, resubmission clusters...]"""
+    code, out = remote("ospool", f"cd {OSPOOL_ROOT} && for c in {glob}; do [ -d \"$c\" ] && echo \"$c $(cat $c/condor_submit.txt"
+                                 f" $c/resubmissions.txt 2>/dev/null | grep -o 'cluster [0-9]*' | tr -dc '0-9\\n' | paste -sd' ')\"; done")
     if code != 0:
         return {}
-    return {name: int(cid) for name, cid in (l.split() for l in out.splitlines() if len(l.split()) == 2)}
+    return {f[0]: [int(x) for x in f[1:]] for f in (l.split() for l in out.splitlines()) if len(f) >= 2}
 
 
 def ospool_queue(clusters: list[int]) -> dict:
@@ -250,18 +251,19 @@ def main():
     if not camps:
         log.append("ospool: unreachable or no campaigns")
     else:
-        queue = ospool_queue(list(camps.values()))
-        ospool_auto_release([c for c in camps.values() if any(j["state"] == "held" for j in queue.get(c, {}).values())])
-        for name, cid in camps.items():
+        queue = ospool_queue([c for cs in camps.values() for c in cs])
+        ospool_auto_release([c for cs in camps.values() for c in cs if any(j["state"] == "held" for j in queue.get(c, {}).values())])
+        for name, clusters in camps.items():
+            cid = clusters[0]
             local = a.local_root / "ospool" / name
             if not a.no_pull:
                 ospool_pull(name, local / "jobs")
             manifest = json.loads((local / "jobs" / "campaign_manifest.json").read_text()) | {"first_cluster": cid}
-            jobs = queue.get(cid, {})
+            jobs = {(c, p): j for c in clusters for p, j in queue.get(c, {}).items()}
             states = {s: sum(1 for j in jobs.values() if j["state"] == s) for s in {j["state"] for j in jobs.values()}}
             holds = sorted({j["hold"][:120] for j in jobs.values() if j["state"] == "held"})
             slices = ospool_slices(local / "jobs", manifest)
-            p = assess(name, "ospool", manifest, slices, len(jobs), states) | {"condor_cluster": cid, "hold_reasons": holds}
+            p = assess(name, "ospool", manifest, slices, len(jobs), states) | {"condor_clusters": clusters, "hold_reasons": holds}
             if p["complete"] and not a.no_merge:
                 p["merge"] = merge_campaign(local, slices)
             (local / "progress_phantom.json").write_text(json.dumps(p, indent=1) + "\n")

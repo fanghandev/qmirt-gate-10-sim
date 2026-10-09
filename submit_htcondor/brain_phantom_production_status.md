@@ -53,3 +53,29 @@ All jobs exited 0, primaries matched the expected counts, and the time windows w
   single-threaded processes side by side.
 - mesh50: 42 % of the main-window counts come from decays outside the FOV (neck and shoulders), mostly
   on the bottom-ring heads 0, 9 and 1. The merge stores them separately.
+
+## Watcher (since 2026-10-09 23:10 UTC)
+
+- `qmirt-brain-phantom-harvest.timer` (systemd user, at :15 and :45) runs
+  `campaign_tools/watch_brain_phantom_campaigns.py`. It pulls new outputs to
+  `/data/fanghan/opengate_sim/data/brain_phantom/{ospool,eris}/<campaign>/`, checks every slice,
+  and writes `progress_phantom.json`, plus a line per campaign in `watch.log` there. It gives
+  held OSPool jobs a PeriodicRelease, and merges a campaign once it is complete on a cluster
+  (`merged/projections.npz`).
+- `qmirt-ssh-keepalive.timer` (every 4 min) keeps the OSPool and ERIS SSH masters open
+  (`ControlPersist 600`). After a reboot or a lost connection the user must reconnect
+  (`ssh ospool` with MFA, `ssh eris`).
+- Unit templates are in `submit_slurm/systemd/`; the installed copies are in `~/.config/systemd/user/`.
+- Resubmit failed slices on OSPool (on the access point, `~/qmirt-brain-phantom`):
+  `bash submit_htcondor/run_brain_phantom_batch.sh --into <campaign dir> --slices 3,17,...`;
+  the failed slices are listed in `progress_phantom.json`.
+
+## Incident 2026-10-09: SIGILL on old OSPool nodes
+
+- 74 Jaszczak jobs exited 132 (illegal instruction) about 60 s in, on x86_64-v2 nodes
+  (palmetto.clemson.edu, aglt2, uconn). The container's polars needs v3.
+- Fix: the queued clusters were edited to require `Microarch` x86_64-v3/v4 (93 % of slots) and to
+  return failed jobs to the queue (up to 5 starts); the launcher now does both.
+- The 74 slices were resubmitted as cluster 15868860.
+- The cardiac OSPool workflow only requires Singularity and could hit the same problem if its jobs
+  import polars.

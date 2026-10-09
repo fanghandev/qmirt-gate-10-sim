@@ -1,0 +1,8 @@
+[Unit]
+Description=Keep the SSH master connections to OSPool and ERIS open (ControlPersist is 600 s)
+
+[Service]
+Type=oneshot
+# A command through an open master resets its idle timer; a closed master cannot be
+# reopened here (OSPool needs MFA), so BatchMode just fails quietly until the user reconnects.
+ExecStart=/bin/bash -c 'for h in ospool eris; do timeout 60 ssh -o BatchMode=yes -o ConnectTimeout=20 "$h" true >/dev/null 2>&1 || echo "ssh $h: master closed or unreachable"; done'

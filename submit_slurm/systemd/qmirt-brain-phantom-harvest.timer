@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically harvest the brain SPECT phantom campaigns
+
+[Timer]
+# offset from the brain SRM harvest (:05, :35)
+OnCalendar=*-*-* *:15,45:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

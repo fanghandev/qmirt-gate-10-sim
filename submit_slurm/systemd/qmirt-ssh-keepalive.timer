@@ -1,0 +1,9 @@
+[Unit]
+Description=Keep the OSPool and ERIS SSH masters open (every 4 min)
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=4min
+
+[Install]
+WantedBy=timers.target

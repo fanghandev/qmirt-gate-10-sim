@@ -1,0 +1,13 @@
+[Unit]
+Description=Harvest the brain SPECT phantom campaigns (OSPool + ERIS): pull outputs, check slices, merge complete campaigns
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# numpy lives in the opengate micromamba env; the clusters are reached over the SSH master
+# connections (aliases ospool, eris), kept open by qmirt-ssh-keepalive.timer.
+Environment=PATH=%h/.local/share/micromamba/envs/opengate/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/share/micromamba/envs/opengate/bin/python3 %h/Work/RPIL/QMIRT/qmirt-gate-10-sim/campaign_tools/watch_brain_phantom_campaigns.py --local-root /data/fanghan/opengate_sim/data/brain_phantom
+TimeoutStartSec=infinity
+Nice=10
