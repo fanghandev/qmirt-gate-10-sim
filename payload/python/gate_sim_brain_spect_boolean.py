@@ -424,7 +424,8 @@ def add_geometry_to_gate_sim(sim: gate.Simulation, pl_df: pl.DataFrame, args):
             config["crystal definition"]["n_pixels"] = [1, 1, 1]
         add_collimator_to_gate_sim(sim, config, pl_df, id)
         add_pixelated_detector_to_gate_sim(sim, config, pl_df, id)
-    add_fov_volume_to_gate_sim(sim, shape=args.fov_shape, size_mm=args.fov_size_mm)
+    if args.mode != "phantom":
+        add_fov_volume_to_gate_sim(sim, shape=args.fov_shape, size_mm=args.fov_size_mm)
     if args.with_shielding:
         model = resolve_shield_model(args)
         if model == "csg":
@@ -435,6 +436,15 @@ def add_geometry_to_gate_sim(sim: gate.Simulation, pl_df: pl.DataFrame, args):
             add_shield_pieces_to_gate_sim(sim, args.shield_pieces_dir)
         else:
             add_shielding_to_gate_sim(sim, config)
+    if args.mode == "phantom":
+        # after all hardware (incl. the shield), so the whole scanner can move to the
+        # parallel world; the phantom replaces the FOV volume (its fittings may reach past it)
+        from phantom_gate import add_phantom
+
+        if hardware_in_parallel_world(args):
+            move_hardware_to_parallel_world(sim)
+        add_phantom(sim, load_phantom_spec(args), files_dir=Path(args.output_dir) / "phantom_image",
+                    image_geometry=args.image_geometry)
 
 
 def resolve_shield_model(args) -> str:
@@ -515,6 +525,105 @@ def add_fov_box_to_gate_sim(sim: gate.Simulation, size_mm: float = 150.0):
 
 def add_fov_sphere_to_gate_sim(sim: gate.Simulation, size_mm: float = 150.0):
     return add_fov_volume_to_gate_sim(sim, shape="sphere", size_mm=size_mm)
+
+
+PHANTOM_SCATTER_ATTRIBUTES = ["PhantomCompton", "PhantomRayleigh"]
+PHANTOM_LAST_INTERACTION = "PhantomLastInteraction"
+HARDWARE_WORLD = "hardware"
+
+
+def hardware_in_parallel_world(args) -> bool:
+    """Image phantoms are one box (ImageVolume) that reaches through the shield and into
+    collimators; overlapping volumes make Geant4 navigation undefined. The standard GATE 10
+    remedy: the voxel phantom stays in the mass world and the hardware goes to a parallel
+    world with layered mass geometry, whose materials take precedence where they overlap
+    (the hardware only overlaps the image's air voxels). Analytic phantoms clear the hardware
+    and stay in one world."""
+    if args.hardware_world != "auto":
+        return args.hardware_world == "parallel"
+    return phantom_scatter_volume(args) == "phantom_image"
+
+
+def phantom_scatter_volume(args) -> str:
+    """The phantom's outermost volume (it contains every other phantom volume)."""
+    from phantom_models import is_image
+
+    image = is_image(load_phantom_spec(args).phantom)
+    return "phantom_image" if image and args.image_geometry == "voxel" else "phantom_body"
+
+
+def move_hardware_to_parallel_world(sim: gate.Simulation):
+    """Re-parent every top-level hardware volume (collimators, crystals, shield) to a
+    layered-mass parallel world. Call after the hardware and before the phantom."""
+    sim.add_parallel_world(HARDWARE_WORLD)
+    moved = 0
+    for volume in list(sim.volume_manager.volumes.values()):
+        if volume.name != HARDWARE_WORLD and volume.mother == "world":
+            volume.mother = HARDWARE_WORLD
+            moved += 1
+    print(f"Hardware in parallel world '{HARDWARE_WORLD}': {moved} top-level volumes")
+
+
+def load_phantom_spec(args):
+    import json
+
+    from phantom_models import Spec
+
+    return Spec.from_dict(json.loads(Path(args.phantom_spec).read_text()))
+
+
+def add_phantom_source(sim: gate.Simulation, args):
+    """Phantom activity: --phantom-activity-bq decays/s at time 0 in --phantom-activity-region
+    ("all": the whole phantom; "brain": an image phantom's brain, the rest scaled by the
+    map). opengate gives every thread its own source, so each thread gets 1/threads of it.
+    Returns the per-thread source activity in decays/s (for the EventID checks; an upper
+    bound on primaries)."""
+    from phantom_gate import add_activity_source
+    from phantom_models import activity_fraction
+
+    spec = load_phantom_spec(args)
+    total_bq = args.phantom_activity_bq / activity_fraction(spec, args.phantom_activity_region)
+    radionuclide = None if args.radionuclide == "none" else args.radionuclide
+    source = add_activity_source(sim, spec, total_bq / args.num_threads, radionuclide=radionuclide,
+                                 half_life=not args.no_decay)
+    args.phantom_total_activity_bq = total_bq
+    print(f"Phantom {spec.phantom}: {total_bq:.4e} Bq in total ({args.phantom_activity_bq:.4e} Bq in "
+          f"{args.phantom_activity_region}), {radionuclide or 'mono 140 keV'}, decay {not args.no_decay}")
+    return source.activity / gate.g4_units.Bq
+
+
+def activate_phantom_scatter_attributes(sim: gate.Simulation, args) -> list[str]:
+    """Per-track counts of Compton and Rayleigh steps in the phantom (its outermost volume;
+    the count includes every daughter), inherited by secondaries, so each single says
+    whether its photon scattered in the phantom (object scatter) before reaching the
+    detector. Returns the digitizer attribute names. opengate >= 10.1.1 has auxiliary
+    attributes; 10.1.0 (the cluster container) the actor-based
+    ProcessDefinedStepInVolumeAttribute, named ProcessDefinedStep__<process>__<volume>;
+    both count the same (checked 2026-10-09 on the same toy geometry)."""
+    volume = phantom_scatter_volume(args)
+    names = []
+    if hasattr(sim, "activate_auxiliary_attribute"):
+        for name, process in zip(PHANTOM_SCATTER_ATTRIBUTES, ("compt", "Rayl")):
+            attribute = sim.activate_auxiliary_attribute("ProcessDefinedStepInVolumeAttribute", name)
+            attribute.process_name = process
+            attribute.volume_name = volume
+            attribute.propagate_from_parent_track = True
+            names.append(name)
+    else:
+        from opengate.actors.digitizers import ProcessDefinedStepInVolumeAttribute
+
+        names = [ProcessDefinedStepInVolumeAttribute(sim, process, volume).name for process in ("compt", "Rayl")]
+    if hardware_in_parallel_world(args):
+        # with layered mass geometry the counts see only the mass world: Compton steps in
+        # hardware inside the image box count as "phantom". The last interaction position
+        # in the box tells them apart (reduce_phantom_singles.py: tissue voxel or not).
+        if not hasattr(sim, "activate_auxiliary_attribute"):
+            raise RuntimeError("--hardware-world parallel needs opengate >= 10.1.1 (LastInteractionPositionInVolumeAttribute)")
+        attribute = sim.activate_auxiliary_attribute("LastInteractionPositionInVolumeAttribute", PHANTOM_LAST_INTERACTION)
+        attribute.volume_name = volume
+        attribute.propagate_from_parent_track = True
+        names.append(PHANTOM_LAST_INTERACTION)
+    return names
 
 
 def add_volume_source(
@@ -619,16 +728,21 @@ def add_digitizer_chain(
     names: tuple[str, str, str],
     singles_root_path: Path,
     blur_fwhm_kev: float,
+    extra_attributes: list[str] | None = None,
 ):
-    """Hits -> readout -> Gaussian energy blur; the blur actor's name is the tree."""
+    """Hits -> readout -> Gaussian energy blur; the blur actor's name is the tree.
+    With blur_fwhm_kev = 0 the readout itself writes the tree (true deposited energy;
+    blur in post-processing)."""
     hits_name, readout_name, singles_name = names
+    if blur_fwhm_kev <= 0:
+        readout_name = singles_name
     # Keep hits in-memory only as input to the singles chain.
     hits_actor: gate.actors.digitizers.DigitizerHitsCollectionActor = sim.add_actor(
         "DigitizerHitsCollectionActor", hits_name
     )
     hits_actor.attached_to = pixel_volumes
     hits_actor.output_filename = ""
-    hits_actor.attributes = HIT_ATTRIBUTES
+    hits_actor.attributes = HIT_ATTRIBUTES + list(extra_attributes or [])
     readout_actor = sim.add_actor("DigitizerReadoutActor", readout_name)
     readout_actor.input_digi_collection = hits_actor.name
     # Discretization works by tree depth, which is the same for every head, so
@@ -637,6 +751,9 @@ def add_digitizer_chain(
     readout_actor.discretize_volume = first_volume
     readout_actor.policy = "EnergyWeightedCentroidPosition"
     readout_actor.output_filename = ""
+    if blur_fwhm_kev <= 0:
+        readout_actor.output_filename = singles_root_path
+        return
     blur_actor: gate.actors.digitizers.DigitizerBlurringActor = sim.add_actor(
         "DigitizerBlurringActor", singles_name
     )
@@ -656,6 +773,7 @@ def add_actors(
     energy_resolution: float = 0.10,
     energy_resolution_reference_kev: float = 140.0,
     layout: str = "merged",
+    extra_attributes: list[str] | None = None,
 ):
     """Singles digitizer for all heads.
 
@@ -677,6 +795,7 @@ def add_actors(
             ("PixelHits", "PixelReadout", MERGED_SINGLES_TREE),
             singles_root_path,
             blur_fwhm_kev,
+            extra_attributes,
         )
     elif layout == "per-head":
         for i in range(n_crystals):
@@ -686,6 +805,7 @@ def add_actors(
                 (f"PixelHits_{i + 1}", f"Pixel_{i + 1}_Readout", f"Pixel_{i + 1}_Singles"),
                 singles_root_path,
                 blur_fwhm_kev,
+                extra_attributes,
             )
     else:
         raise ValueError(f"Unsupported actor layout: {layout!r}")
@@ -701,8 +821,10 @@ def configure_chunked_run_timing(sim: gate.Simulation, args):
 
     sec = gate.g4_units.s
     interval_duration = args.chunk_duration_s * sec
+    # absolute times (a time-sliced job starts at --time-start-s; source decay uses them)
+    start = getattr(args, "time_start_s", 0.0) * sec
     sim.run_timing_intervals = [
-        [i * interval_duration, (i + 1) * interval_duration]
+        [start + i * interval_duration, start + (i + 1) * interval_duration]
         for i in range(args.num_chunks)
     ]
 
@@ -774,6 +896,7 @@ def run_simulation(
     add_geometry_to_gate_sim(sim, geometry_transformation_dataframe, args)
 
     # Add Source to the simulation
+    extra_attributes = None
     if args.mode == "srm-sim":
         add_volume_source(
             sim,
@@ -783,6 +906,10 @@ def run_simulation(
             fov_shape=args.fov_shape,
             fov_size_mm=args.fov_size_mm,
         )
+    elif args.mode == "phantom":
+        # per-thread photons/s; configure_chunked_run_timing checks EventID ranges with it
+        args.source_activity_bq = add_phantom_source(sim, args)
+        extra_attributes = activate_phantom_scatter_attributes(sim, args)
     sim.number_of_threads = int(args.num_threads)
     configure_chunked_run_timing(sim, args)
     # In activity mode, expected event count is stochastic and controlled by
@@ -798,6 +925,7 @@ def run_simulation(
         energy_resolution=args.energy_resolution,
         energy_resolution_reference_kev=args.energy_resolution_reference_kev,
         layout=args.actor_layout,
+        extra_attributes=extra_attributes,
     )
     add_stats_actor(sim, output_dir, output_stem)
     write_run_manifest(output_dir, output_stem, args, unique_seed)
@@ -891,8 +1019,67 @@ def parse_arguments():
         "--mode",
         type=str,
         default="srm-sim",
-        choices=["srm-sim", "geometry-only"],
-        help="Compatibility alias for the source FOV shape or geometry-only export mode.",
+        choices=["srm-sim", "geometry-only", "phantom"],
+        help="srm-sim: uniform FOV source (system matrix); phantom: a phantom from "
+        "--phantom-spec with its activity; geometry-only: geometry export.",
+    )
+    parser.add_argument(
+        "--phantom-spec",
+        type=str,
+        default=None,
+        help="Phantom spec .json (phantom_models.Spec; a phantom bundle's spec.json) for --mode phantom.",
+    )
+    parser.add_argument(
+        "--phantom-activity-bq",
+        type=float,
+        default=None,
+        help="Phantom activity at time 0 (decays/s) in --phantom-activity-region.",
+    )
+    parser.add_argument(
+        "--phantom-activity-region",
+        type=str,
+        choices=["all", "brain"],
+        default="all",
+        help="Where --phantom-activity-bq is: the whole phantom, or an image phantom's brain "
+        "(the rest of the map scaled with it).",
+    )
+    parser.add_argument(
+        "--radionuclide",
+        type=str,
+        choices=["Tc99m", "none"],
+        default="Tc99m",
+        help="Phantom source: the radionuclide's gamma lines (ICRP-107) and half-life, or "
+        "'none' for mono 140 keV gammas without decay.",
+    )
+    parser.add_argument(
+        "--no-decay",
+        action="store_true",
+        help="Keep the phantom activity constant (no physical decay).",
+    )
+    parser.add_argument(
+        "--image-geometry",
+        type=str,
+        choices=["mesh", "voxel"],
+        default="mesh",
+        help="Image phantoms: the model's published nested surface meshes (e.g. Auer's "
+        "mesh50_XCAT head; they clear the hardware; default) or one ImageVolume box (overlaps "
+        "the hardware, so --hardware-world auto moves the hardware to a parallel world, ~3x slower).",
+    )
+    parser.add_argument(
+        "--hardware-world",
+        type=str,
+        choices=["auto", "mass", "parallel"],
+        default="auto",
+        help="Where the scanner hardware goes in phantom mode: 'auto' puts it in a "
+        "layered-mass parallel world for image phantoms (their box overlaps it), in the "
+        "mass world for analytic phantoms.",
+    )
+    parser.add_argument(
+        "--time-start-s",
+        type=float,
+        default=0.0,
+        help="Start of this job's time window (s after the acquisition start); "
+        "chunks follow from there. Time-sliced jobs use it so decay is exact.",
     )
     parser.add_argument(
         "--no-shielding",
@@ -984,7 +1171,9 @@ def main():
     )
     if args.mode == "geometry-only":
         run_simulation_with_geometry_only(args)
-    elif args.mode == "srm-sim":
+    elif args.mode in ("srm-sim", "phantom"):
+        if args.mode == "phantom" and not (args.phantom_spec and args.phantom_activity_bq):
+            raise ValueError("--mode phantom needs --phantom-spec and --phantom-activity-bq")
         run_simulation(args)
     else:
         raise ValueError(f"Unsupported mode: {args.mode}")

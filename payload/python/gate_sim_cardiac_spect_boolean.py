@@ -11,6 +11,8 @@ from opengate.geometry.volumes import subtract_volumes, unite_volumes
 from scipy.spatial.transform import Rotation
 
 import qmirt
+from phantom_gate import add_activity_source, add_phantom
+from phantom_models import Spec
 
 
 def _parse_activity_to_bq(
@@ -47,144 +49,35 @@ def _parse_activity_to_bq(
     return value * unit_scale_to_bq[unit]
 
 
-# Helper function: Generate a triangular mesh array of cold rods within a 60-degree sector
-def add_rod_sector(sim, mother_name, sector_index, rod_radius_mm, spacing_mm):
-    """
-    sector_index: 0 to 5, representing the six 60-degree sectors
-    rod_radius_mm: Radius of the cold rods in this sector
-    spacing_mm: Center-to-center spacing of the rods (typically 2x the diameter)
-    """
-    cm = gate.g4_units.cm
-    mm = gate.g4_units.mm
-    rod_height = 8.8 * cm
-    z_offset_rods = -4.65 * cm
+def phantom_spec(args) -> Spec:
+    """Phantom to simulate: a spec .json (from the phantom controller or the digital
+    phantom scripts) or the default ACR Deluxe Jaszczak, centred and upright. The same spec
+    builds the voxel phantom for forward projection (payload/python/phantom_models.py)."""
+    path = getattr(args, "phantom_spec", None)
+    if path:
+        import json
 
-    # Base rotation angle (each sector spans 60 degrees)
-    theta = np.deg2rad(sector_index * 60)
-    # Rotation matrix to map the 0-degree reference sector to its target position
-    rot_matrix = np.array(
-        [[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]]
-    )
-
-    # Generate triangular grid points within the 60-degree sector (simplified high-density generation strategy)
-    # In practice, adjust 'rows' to control the number of rod layers
-    rows = int((10.0 * cm) / (spacing_mm * mm))
-    rod_count = 0
-
-    for row in range(1, rows):
-        # Increment the number of rods per row
-        for col in range(row):
-            # Local coordinate system for the 0-degree reference sector (X is the central axis of the sector)
-            local_x = row * spacing_mm * mm * np.cos(np.deg2rad(30))
-            # Y-coordinates are distributed symmetrically across the central axis based on the column index
-            local_y = (col - (row - 1) / 2.0) * spacing_mm * mm
-
-            # Discard if the coordinate exceeds the inner radius of the main cylinder (leaving a marginal gap)
-            if np.sqrt(local_x**2 + local_y**2) + rod_radius_mm * mm > 9.8 * cm:
-                continue
-
-            # Apply the rotation matrix to map coordinates to the global XY plane
-            global_xy = rot_matrix.dot(np.array([local_x, local_y]))
-
-            rod = sim.add_volume("TubsVolume", f"ColdRod_S{sector_index}_{rod_count}")
-            rod.mother = mother_name
-            rod.material = "G4_PLEXIGLASS"
-            rod.rmin = 0
-            rod.rmax = rod_radius_mm * mm
-            rod.dz = rod_height * 0.5
-            rod.translation = [global_xy[0], global_xy[1], z_offset_rods]
-            rod.color = [0.8, 0.8, 0.8, 1]
-
-            rod_count += 1
+        return Spec.from_dict(json.loads(Path(path).read_text()))
+    return Spec("acr_deluxe")
 
 
-def add_Jaszczak_phantom(sim: gate.Simulation):
-    # ========================================================
-    # 1. Define Mother Volume - Filled with radioactive water solution
-    # ========================================================
-    # Use Geant4's built-in NIST material database to avoid loading external db files
-
-    cm = gate.g4_units.cm
-    mm = gate.g4_units.mm
-    phantom = sim.add_volume("TubsVolume", "Jaszczak_Phantom")
-    phantom.mother = "world"
-    phantom.material = "G4_WATER"
-    phantom.rmin = 0 * cm
-    phantom.rmax = 10.2 * cm
-    phantom.dz = 18.6 * cm * 0.5  # Total cylinder height
-    # Set display color: RGBA (translucent blue)
-    phantom.color = [0, 0, 1, 0.2]
-
-    # ========================================================
-    # 2. Construct upper section Cold Spheres
-    # ========================================================
-    # Cold sphere diameters (mm): 31.8, 25.4, 19.1, 15.9, 12.7, 9.5
-    sphere_radii_mm = [15.9, 12.7, 9.55, 7.95, 6.35, 4.75]
-    sphere_angles_deg = [0, 60, 120, 180, 240, 300]
-    sphere_placement_radius = 5.72 * cm
-    z_offset_spheres = 4.65 * cm  # Z-axis offset for the upper section
-
-    for i, (r, angle) in enumerate(zip(sphere_radii_mm, sphere_angles_deg)):
-        sph = sim.add_volume("Sphere", f"ColdSphere_{i}")
-        sph.mother = (
-            "Jaszczak_Phantom"  # CSG: Placed directly in water as a daughter volume
-        )
-        sph.material = "G4_PLEXIGLASS"  # Acrylic (PMMA) material
-        sph.rmin = 0
-        sph.rmax = r * mm
-
-        # Calculate XY coordinates directly in Python
-        x = sphere_placement_radius * np.cos(np.deg2rad(angle))
-        y = sphere_placement_radius * np.sin(np.deg2rad(angle))
-        sph.translation = [x, y, z_offset_spheres]
-        sph.color = [1, 1, 1, 0.8]  # Opaque white
-
-    # ========================================================
-    # 3. Construct lower section Cold Rods array
-    # ========================================================
-
-    # Cold rod radius specifications for the 6 sectors (mm): 6.35, 5.55, 4.75, 3.95, 3.2, 2.4
-    rod_radii_mm = [6.35, 5.55, 4.75, 3.95, 3.2, 2.4]
-
-    # Loop to generate cold rods for all 6 sectors
-    for sector, r in enumerate(rod_radii_mm):
-        # Center-to-center spacing is typically 2x the rod diameter
-        spacing = r * 4.0
-        add_rod_sector(sim, "Jaszczak_Phantom", sector, r, spacing)
-
-
-def add_background_source(
-    sim: gate.Simulation,
-    args,
-    *,
-    phantom_name: str = "Jaszczak_Phantom",
-):
-    """Add a monoenergetic gamma source confined to the Jaszczak phantom."""
+def add_background_source(sim: gate.Simulation, args):
+    """Uniform monoenergetic gamma source in the phantom's water (cold inserts excluded)."""
     source_type = str(getattr(args, "source_type", "Gamma-140")).upper()
     if source_type not in {"GAMMA-140", "GAMMA"}:
         raise ValueError(
             "Only monoenergetic gamma sources are supported for the cardiac script."
         )
-
-    source = sim.add_source("GenericSource", "Gamma_Background")
-    source.particle = "gamma"
-    source.energy.type = "mono"
-    source.energy.mono = 140.0 * gate.g4_units.keV
-
-    source.position.type = "cylinder"
-    source.position.radius = 10.2 * gate.g4_units.cm
-    source.position.dz = 18.6 * gate.g4_units.cm
-    source.position.translation = [0, 0, 0]
-    source.position.confine = phantom_name
-
     source_activity_bq = getattr(args, "source_activity_bq", None)
     if source_activity_bq is None and hasattr(args, "source_activity"):
         source_activity_bq = _parse_activity_to_bq(args.source_activity)
     if source_activity_bq is None:
         raise ValueError("A positive source activity is required.")
-    source.activity = source_activity_bq * gate.g4_units.Bq
+    source = add_activity_source(
+        sim, phantom_spec(args), source_activity_bq, energy_kev=140.0, name="Gamma_Background"
+    )
     print(
-        f"Background gamma source added to '{phantom_name}' with activity {source.activity:.2e} Bq."
+        f"Background gamma source added to 'phantom_water' with activity {source.activity:.2e} Bq."
     )
     return source
 
@@ -590,7 +483,7 @@ def _configure_wrl_export(
 
     if force_phantom_wireframe:
         sim.visu_commands_vrml.append(
-            "/vis/geometry/set/forceWireframe Jaszczak_Phantom 0 true"
+            "/vis/geometry/set/forceWireframe phantom_body 0 true"
         )
 
 
@@ -624,9 +517,10 @@ def _add_scanner_geometry(sim: gate.Simulation, config: dict, *, args):
         add_shielding_to_gate_sim(sim, config)
 
 
-def _add_phantom_geometry(sim: gate.Simulation, config: dict):
-    print("Adding Jaszczak phantom geometry...")
-    add_Jaszczak_phantom(sim)
+def _add_phantom_geometry(sim: gate.Simulation, config: dict, args=None):
+    spec = phantom_spec(args)
+    print(f"Adding phantom geometry: {spec.to_dict()}")
+    add_phantom(sim, spec)
 
 
 def save_geometry_to_wrl(
@@ -661,11 +555,11 @@ def save_geometry_to_wrl(
         return
 
     if export_target == "phantom":
-        _add_phantom_geometry(sim, config)
+        _add_phantom_geometry(sim, config, args)
     else:
         _add_scanner_geometry(sim, config=config, args=args)
         add_fov_volume_to_gate_sim(sim, shape=args.fov_shape, size_mm=args.fov_size_mm)
-        _add_phantom_geometry(sim, config)
+        _add_phantom_geometry(sim, config, args)
     _configure_wrl_export(sim, force_phantom_wireframe=True)
 
     _apply_debug_geometry_settings(sim, args)
@@ -823,7 +717,7 @@ def run_simulation(config: dict, persist_data_dir: Path, args):
         _add_scanner_geometry(sim, config, args=args)
     elif simulation_mode == "jaszczak":
         _add_scanner_geometry(sim, config, args=args)
-        _add_phantom_geometry(sim, config)
+        _add_phantom_geometry(sim, config, args)
     else:
         raise ValueError("simulation_mode must be one of: 'srm-sim' or 'jaszczak'")
 
@@ -844,7 +738,7 @@ def run_simulation(config: dict, persist_data_dir: Path, args):
             fov_size_mm=args.fov_size_mm,
         )
     elif simulation_mode == "jaszczak":
-        add_background_source(sim, args, phantom_name="Jaszczak_Phantom")
+        add_background_source(sim, args)
 
     sim.number_of_threads = int(args.num_threads)
     configure_chunked_run_timing(sim, args)
@@ -1112,6 +1006,13 @@ def parse_args(args=None):
         type=float,
         default=140.0,
         help="Reference energy in keV at which --energy-resolution is specified.",
+    )
+    parser.add_argument(
+        "--phantom-spec",
+        type=Path,
+        default=None,
+        help="Phantom spec .json (phantom controller, or the .json next to a digital "
+        "phantom .npz); default: ACR Deluxe Jaszczak, centred and upright.",
     )
     parsed_args = parser.parse_args(args)
     return parsed_args
