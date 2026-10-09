@@ -3,7 +3,10 @@
 # (gate_sim_brain_spect_boolean.py --mode phantom), reduced to list-mode in the job; the
 # singles ROOT file never leaves the execute node (unless KEEP_ROOT=1).
 #
-#   wrapper_brain_phantom_sim.sh <cluster_id> <proc_id> <campaign.env>
+#   wrapper_brain_phantom_sim.sh <cluster_id> <proc_id> <campaign.env> [slice]
+#
+# The job simulates slice <proc_id> + SLICE_OFFSET, or [slice] when given (resubmissions);
+# it writes the slice index to slice.txt.
 #
 # campaign.env (written by run_brain_phantom_batch.sh) sets:
 #   PHANTOM_SPEC     spec name in the payload (payload/phantom_specs/<name>.json)
@@ -54,7 +57,8 @@ archive_results() {
 }
 trap 'archive_results $?' EXIT
 
-SLICE=$((PROC_ID + ${SLICE_OFFSET:-0}))
+SLICE="${4:-$((PROC_ID + ${SLICE_OFFSET:-0}))}"
+echo "$SLICE" > "$OUT_DIR/slice.txt"
 NUM_CHUNKS=$(python3 -c "print(round(${SLICE_S} / ${CHUNK_S}))")
 TIME_START=$(python3 -c "print(${SLICE} * ${SLICE_S})")
 echo "Job $CLUSTER_ID.$PROC_ID: ${PHANTOM_SPEC}, ${ACTIVITY_BQ} Bq in ${ACTIVITY_REGION:-all}, slice ${SLICE}: t = ${TIME_START} s + ${NUM_CHUNKS} x ${CHUNK_S} s"
