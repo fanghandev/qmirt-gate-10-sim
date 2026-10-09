@@ -19,6 +19,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SIF="${SIF:-$SCRIPT_DIR/qmirt-gate-10-sim-sif_v1.0.0.sif}"
+APPTAINER_MODULE="${APPTAINER_MODULE:-Apptainer/1.4.2-1.el9}"  # ERIS; the bin dir is added to PATH as well
+APPTAINER_DIR="${APPTAINER_DIR:-/apps/software/Apptainer/1.4.2-1.el9/bin}"
 ROOT="${BRAIN_PHANTOM_ROOT:-$HOME/brain_phantom}"
 LABEL="" PAYLOAD="" SPEC="" ACTIVITY="" REGION="all" SLICE_S="" SLICES="" PROCS=16 PARTITION="" TIME="12:00:00"
 MEM_PER_PROC="3G" ACCOUNT="hsabet" OFFSET=0 CHUNK_S="" DRY=0
@@ -126,7 +128,7 @@ JSON
 SB=(sbatch --parsable --job-name "bp_${LABEL}" --account "$ACCOUNT" --partition "$PARTITION" --array "0-$((TASKS - 1))"
     --cpus-per-task "$PROCS" --mem "${MEM_MB}M" --time "$TIME"
     --output "$CAMPAIGN/logs/task_%a.out" --error "$CAMPAIGN/logs/task_%a.err"
-    --wrap "module load Apptainer/1.4.2 2>/dev/null || true; bash $TASK_SCRIPT")
+    --wrap "source /etc/profile >/dev/null 2>&1; module load ${APPTAINER_MODULE} >/dev/null 2>&1; export PATH=${APPTAINER_DIR}:\$PATH; bash $TASK_SCRIPT")
 echo "Campaign: $CAMPAIGN"
 if [[ "$DRY" -eq 1 ]]; then printf '%q ' "${SB[@]}"; echo; exit 0; fi
 JOB_ID="$("${SB[@]}")"
