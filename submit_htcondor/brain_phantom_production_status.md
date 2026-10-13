@@ -79,3 +79,42 @@ All jobs exited 0, primaries matched the expected counts, and the time windows w
 - The 74 slices were resubmitted as cluster 15868860.
 - The cardiac OSPool workflow only requires Singularity and could hit the same problem if its jobs
   import polars.
+
+## Status 2026-10-13
+
+| Campaign | OSPool | ERIS |
+| --- | --- | --- |
+| small Jaszczak | 1791/1800; the last 9 resubmitted (cluster 16040967) | **complete, merged** |
+| mesh50 clinical | **complete, merged** | 288/720 done; 384 failed at the reduction step (payload purged) |
+| mesh50 10× | 8991/9000; 9 runaway jobs (held at the 20 h limit) resubmitted (cluster 16040968) | 0/7200; 7152 failed at the reduction step (payload purged) |
+
+## Incident: ERIS scratch purge deleted the payload (2026-10-12)
+
+- The payload is unpacked with its archive's fixed 2020 mtime (kept for a reproducible hash), so
+  the scratch purge saw it as old and deleted it while the jobs ran. The simulations finished
+  (about 7 h each), but `reduce_phantom_singles.py` was gone, so the slices exited 2 with no
+  list-mode. Their ROOT files were kept, because cleanup only runs after a successful reduction.
+- Fix: the launcher unpacks with `--touch`, and every slice refreshes the payload mtimes.
+- Recovery (needs `ssh eris`): unpack the payload again, then rerun only the reductions on the
+  surviving ROOT files; re-simulate slices whose ROOT files are gone.
+
+## Incident: radioactive decay not applied across slices (found 2026-10-13)
+
+- opengate (10.1.0 and 10.1.1) starts the decay clock at each simulation's first time window,
+  not at t = 0. Every time-sliced job therefore restarted the decay: primaries are flat over the
+  900 s instead of 2.8 % lower at the end.
+- Finished data: the merge keeps each single of a slice starting at t0 with probability
+  exp(−λ t0) (Poisson thinning). The result is exactly a source decaying from t = 0: decay-weighted
+  primaries 4.3858e11 (Jaszczak) and 3.5082e10 (head), as expected. The merges without this
+  correction are kept as `merged/projections_nodecay.npz`.
+- Sim fix (`df3f39b`): a job starts with the activity decayed to its slice start and records
+  `phantom_activity_decay_origin = acquisition`; the merge does not thin such slices.
+- The running and resubmitted jobs use the old payload; the merge corrects them.
+
+## Note: stuck-track warnings in the mesh head
+
+- About 1 GeomNav1002 warning per 10⁷ photons, where the brain or air cavity meets the skeleton
+  or body (the 20 µm cut gaps). Geant4 pushes the track 1e-7 mm and continues; the physical effect
+  is negligible.
+- 9 of the 9000 OSPool 10× jobs ran past 20 h, presumably tracks that never got unstuck; their
+  slices are resubmitted with new seeds.
