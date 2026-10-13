@@ -581,13 +581,24 @@ def add_phantom_source(sim: gate.Simulation, args):
     from phantom_gate import add_activity_source
     from phantom_models import activity_fraction
 
+    import math
+
+    from phantom_gate import RADIONUCLIDES
+
     spec = load_phantom_spec(args)
     total_bq = args.phantom_activity_bq / activity_fraction(spec, args.phantom_activity_region)
     radionuclide = None if args.radionuclide == "none" else args.radionuclide
+    if radionuclide is not None and not args.no_decay:
+        # opengate starts the decay clock at the first timing interval of the simulation,
+        # not at t = 0 (checked 2026-10-13, 10.1.0 and 10.1.1): a job whose slice starts at
+        # --time-start-s begins with the activity decayed to that time.
+        lam = math.log(2) / RADIONUCLIDES[radionuclide]["half_life_s"]
+        total_bq *= math.exp(-lam * args.time_start_s)
+        args.phantom_activity_decay_origin = "acquisition"
     source = add_activity_source(sim, spec, total_bq / args.num_threads, radionuclide=radionuclide,
                                  half_life=not args.no_decay)
     args.phantom_total_activity_bq = total_bq
-    print(f"Phantom {spec.phantom}: {total_bq:.4e} Bq in total ({args.phantom_activity_bq:.4e} Bq in "
+    print(f"Phantom {spec.phantom}: {total_bq:.4e} Bq in total at the slice start ({args.phantom_activity_bq:.4e} Bq in "
           f"{args.phantom_activity_region}), {radionuclide or 'mono 140 keV'}, decay {not args.no_decay}")
     return source.activity / gate.g4_units.Bq
 

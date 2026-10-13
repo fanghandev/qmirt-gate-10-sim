@@ -64,7 +64,9 @@ MEM_MB=$(python3 -c "u='${MEM_PER_PROC}'; print(int(float(u[:-1]) * (1024 if u[-
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 CAMPAIGN="${ROOT}/${LABEL}_${STAMP}"
 mkdir -p "$CAMPAIGN/payload_root" "$CAMPAIGN/slices" "$CAMPAIGN/logs"
-tar -xzf "$PAYLOAD" -C "$CAMPAIGN/payload_root"
+# --touch: the payload archive stores a fixed 2020 mtime (reproducible hash); kept, those
+# files look years old to the scratch purge, which deleted them mid-campaign (2026-10-12).
+tar -xzf "$PAYLOAD" -C "$CAMPAIGN/payload_root" --touch
 
 # task.sh: the slice runner, parameters baked in as variables (no nested quoting)
 TASK_SCRIPT="$CAMPAIGN/task.sh"
@@ -80,6 +82,8 @@ run_slice() {
     local s="$1" out="$CAMPAIGN/slices/slice_$1" start t0 code
     start=$(date +%s)
     mkdir -p "$out"
+    # keep the payload young for the scratch purge (long campaigns)
+    find "$CAMPAIGN/payload_root" -type f -exec touch -c {} + 2>/dev/null
     t0=$(python3 -c "print($s * $SLICE_S)")
     apptainer exec --bind "$CAMPAIGN" --pwd "$CAMPAIGN/payload_root" \
         --env PYTHONPATH="$CAMPAIGN/payload_root/qmirt/src" \

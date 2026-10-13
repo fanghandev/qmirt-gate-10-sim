@@ -4,6 +4,12 @@ acquisition: energy blur, energy-binned projections and window projections.
 Energy resolution is applied here (the simulation stores the true deposited energy):
 FWHM(E) = R * E_ref * sqrt(E / E_ref), Gaussian, R = --fwhm (default 0.10 at 140.5 keV).
 
+Radioactive decay: opengate starts the decay clock at each job's first time window, so jobs
+run before 2026-10-13 (no "phantom_activity_decay_origin" in their manifest) decay within
+their slice only. For them each single is kept with probability exp(-lambda t0), t0 = the
+slice start (Poisson thinning: exactly a source decaying from t = 0). --no-decay-correction
+turns this off.
+
 Every single is sorted by where its decay was: inside the SRM FOV (a sphere of --fov-radius-mm
 at the scanner centre; 144 mm = the 288 mm SRM) or outside it (e.g. neck and shoulders below
 the helmet), and by whether its photon scattered in the phantom. The full acquisition is the
@@ -32,6 +38,7 @@ from pathlib import Path
 import numpy as np
 
 E_REF = 140.511
+HALF_LIFE_S = {"Tc99m": 6.0067 * 3600.0}
 WINDOWS = {"main": (126.46, 154.56), "tew_lower": (120.84, 126.46), "tew_upper": (154.56, 160.18)}
 HEADS, PIXELS = 73, 625
 
@@ -48,8 +55,12 @@ CLASSES = ("total", "primary")
 
 
 def merge(out: Path, files: list[Path], fwhm: float, seed: int, emin: float, emax: float, bin_kev: float,
-          heads: int = HEADS, write_listmode: bool = False, fov_radius_mm: float = 144.0) -> dict:
+          heads: int = HEADS, write_listmode: bool = False, fov_radius_mm: float = 144.0,
+          decay_correction: bool = True) -> dict:
     rng = np.random.default_rng(seed)
+    thin_rng = np.random.default_rng(seed + 1)
+    decay = {"thinned_jobs": 0, "kept_fraction_mean": None}
+    kept_fracs = []
     edges = np.arange(emin, emax + bin_kev / 2, bin_kev)
     nb = len(edges) - 1
     proj = {f"projections_{r}_{c}": np.zeros((heads, PIXELS, nb), np.uint32) for r in REGIONS for c in CLASSES}
@@ -60,6 +71,17 @@ def merge(out: Path, files: list[Path], fwhm: float, seed: int, emin: float, ema
         d = np.load(f)
         meta = json.loads(str(d["meta"]))
         metas.append({k: meta[k] for k in ("job_dir", "singles", "primaries", "time_window_s", "random_seed")})
+        params = meta.get("manifest", {}).get("parameters", {})
+        keep = np.ones(len(d["energy_kev"]), bool)
+        if (decay_correction and params.get("radionuclide", "Tc99m") != "none" and not params.get("no_decay")
+                and params.get("phantom_activity_decay_origin") != "acquisition"):
+            lam = np.log(2) / HALF_LIFE_S[params.get("radionuclide", "Tc99m")]
+            p = float(np.exp(-lam * meta["time_window_s"][0]))
+            keep = thin_rng.random(len(keep)) < p
+            decay["thinned_jobs"] += 1
+            kept_fracs.append(p)
+            metas[-1]["decay_keep_probability"] = p
+        d = {k: d[k][keep] if k != "meta" else d[k] for k in d.files}
         e = blur(d["energy_kev"], fwhm, rng)
         unscattered = d["phantom_scatter"] == 0
         in_fov = np.linalg.norm(d["event_mm"], axis=1) < fov_radius_mm
@@ -85,6 +107,9 @@ def merge(out: Path, files: list[Path], fwhm: float, seed: int, emin: float, ema
             "energy_resolution": {"fwhm_at_ref": fwhm, "ref_kev": E_REF, "model": "FWHM proportional to sqrt(E)", "seed": seed},
             "energy_bins_kev": [emin, emax, bin_kev], "windows_kev": WINDOWS,
             "fov": {"radius_mm": fov_radius_mm, "centre": [0.0, 0.0, 0.0], "split_by": "decay position (event_mm)"},
+            "decay_correction": decay | {"kept_fraction_mean": float(np.mean(kept_fracs)) if kept_fracs else None,
+                                         "method": "Poisson thinning exp(-lambda t_slice_start)"},
+            "primaries_decay_weighted": float(sum(m["primaries"] * m.get("decay_keep_probability", 1.0) for m in metas)),
             "window_counts": {k: int(v.sum()) for k, v in win.items() if k.startswith("windows_main")},
             "job_list": metas}
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -106,9 +131,10 @@ def main():
     ap.add_argument("--bin-kev", type=float, default=1.0)
     ap.add_argument("--listmode", action="store_true")
     ap.add_argument("--fov-radius-mm", type=float, default=144.0, help="SRM FOV radius (288 mm SRM: 144)")
+    ap.add_argument("--no-decay-correction", action="store_true")
     a = ap.parse_args()
     m = merge(a.out, a.files, a.fwhm, a.seed, a.emin, a.emax, a.bin_kev, write_listmode=a.listmode,
-              fov_radius_mm=a.fov_radius_mm)
+              fov_radius_mm=a.fov_radius_mm, decay_correction=not a.no_decay_correction)
     print(f"{m['jobs']} jobs, {m['primaries']:,} primaries, {m['singles']:,} singles, time {m['time_covered_s']} s, "
           f"gaps {m['time_gaps_s']}, overlaps {m['time_overlaps']}")
     print("main window:", m["window_counts"])
