@@ -18,6 +18,7 @@ Both clusters are reached over the SSH master connections (aliases ospool, eris)
 does not answer, that cluster is skipped this time and the log says so.
 
     python watch_brain_phantom_campaigns.py [--local-root DIR] [--no-pull] [--no-merge] [--campaign-glob 'full_*']
+        [--clusters ospool,eris]
 """
 
 import argparse
@@ -243,12 +244,16 @@ def main():
     ap.add_argument("--campaign-glob", default="full_*")
     ap.add_argument("--no-pull", action="store_true")
     ap.add_argument("--no-merge", action="store_true")
+    ap.add_argument("--clusters", default="ospool,eris", help="comma-separated clusters to watch")
     a = ap.parse_args()
+    clusters = set(a.clusters.split(","))
     a.local_root.mkdir(parents=True, exist_ok=True)
     log = []
 
-    camps = ospool_campaigns(a.campaign_glob)
-    if not camps:
+    camps = ospool_campaigns(a.campaign_glob) if "ospool" in clusters else None
+    if camps is None:
+        pass
+    elif not camps:
         log.append("ospool: unreachable or no campaigns")
     else:
         queue = ospool_queue([c for cs in camps.values() for c in cs])
@@ -270,8 +275,10 @@ def main():
             log.append(f"ospool {name}: {p['slices_done']}/{p['slices_expected']} done, failed {len(p['slices_failed'])}, "
                        f"queue {states}{' MERGE ' + p['merge'] if 'merge' in p else ''}")
 
-    camps = eris_campaigns(a.campaign_glob)
-    if not camps:
+    camps = eris_campaigns(a.campaign_glob) if "eris" in clusters else None
+    if camps is None:
+        pass
+    elif not camps:
         log.append("eris: unreachable or no campaigns")
     else:
         queue = eris_queue(list(camps.values()))

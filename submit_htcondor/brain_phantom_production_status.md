@@ -80,13 +80,13 @@ All jobs exited 0, primaries matched the expected counts, and the time windows w
 - The cardiac OSPool workflow only requires Singularity and could hit the same problem if its jobs
   import polars.
 
-## Status 2026-10-13
+## Status 2026-10-13 (13:40 EDT)
 
 | Campaign | OSPool | ERIS |
 | --- | --- | --- |
-| small Jaszczak | 1791/1800; the last 9 resubmitted (cluster 16040967) | **complete, merged** |
-| mesh50 clinical | **complete, merged** | 288/720 done; 384 failed at the reduction step (payload purged) |
-| mesh50 10× | 8991/9000; 9 runaway jobs (held at the 20 h limit) resubmitted (cluster 16040968) | 0/7200; 7152 failed at the reduction step (payload purged) |
+| small Jaszczak | 1797/1800; the last resubmitted jobs (cluster 16040967) are finishing | **complete, merged** |
+| mesh50 clinical | **complete, merged** | **abandoned**: 288/720 done (see below) |
+| mesh50 10× | 8994/9000; the last runaway resubmissions (cluster 16040968) are finishing | **abandoned**: 0/7200 done (see below) |
 
 ## Incident: ERIS scratch purge deleted the payload (2026-10-12)
 
@@ -95,8 +95,26 @@ All jobs exited 0, primaries matched the expected counts, and the time windows w
   (about 7 h each), but `reduce_phantom_singles.py` was gone, so the slices exited 2 with no
   list-mode. Their ROOT files were kept, because cleanup only runs after a successful reduction.
 - Fix: the launcher unpacks with `--touch`, and every slice refreshes the payload mtimes.
-- Recovery (needs `ssh eris`): unpack the payload again, then rerun only the reductions on the
-  surviving ROOT files; re-simulate slices whose ROOT files are gone.
+- Damage (slice scan 2026-10-13):
+  - clinical: 288 done; 384 finished the simulation and kept their ROOT files (reduction only
+    missing); 48 (slices 240–287, array task 5) were cancelled at the Slurm time limit
+    (2026-10-10 09:36) with partial ROOT files.
+  - 10×: slices 0–383 finished the simulation and kept their ROOT files; from slice 384 on the
+    purge had already happened, so the slices exited 2 within seconds
+    (`can't open file .../gate_sim_brain_spect_boolean.py`) and have no data.
+
+## Decision 2026-10-13: ERIS mesh50 route abandoned
+
+- The ERIS mesh50 clinical and 10× campaigns are not recovered or re-simulated. ERIS was the
+  backup for the same targets, and OSPool has the clinical campaign merged and the 10× campaign
+  at 8994/9000. Recovering the 10× campaign would mean simulating about 6800 slices again
+  (about 30k ERIS core-hours) for a duplicate.
+- The ERIS small Jaszczak campaign is complete and merged, and stays usable.
+- Nothing is queued on ERIS. The failed slices are left on scratch for the purge; the harvested
+  copies stay in `/data/fanghan/opengate_sim/data/brain_phantom/eris/`. The watcher still
+  lists these campaigns as incomplete.
+- Also seen 2026-10-13: Slurm commands failed on `erishpc-login-002` (DNS SRV lookup of the
+  controller), so the watcher could not read the ERIS queue.
 
 ## Incident: radioactive decay not applied across slices (found 2026-10-13)
 
@@ -118,3 +136,41 @@ All jobs exited 0, primaries matched the expected counts, and the time windows w
   is negligible.
 - 9 of the 9000 OSPool 10× jobs ran past 20 h, presumably tracks that never got unstuck; their
   slices are resubmitted with new seeds.
+
+## Bug found 2026-10-13: mesh50 activity placed unrotated (all mesh50 campaigns)
+
+- opengate's `VoxelSource` ignores `position.rotation`: only `position.translation` places the
+  image, in the frame of the `attached_to` volume (`sources/voxelsources.py`, 10.1.0 to master;
+  the docs only describe the translation). `phantom_gate.add_activity_source` set the rotation
+  on a source attached to the world for the mesh geometry, so the activity image was placed
+  unrotated: face towards −y, brain at about (−12, +18) mm, while the head meshes (the
+  attenuating anatomy) were placed correctly (face towards +y, the face window).
+- Evidence:
+  - the decay positions of the clinical OSPool singles match the unrotated image (smoothed
+    correlation 0.95) and not the intended pose (0.61);
+  - a minimal GATE test (hot voxel, 180° about z): `position.rotation` changes nothing;
+    attaching the source to a rotated volume rotates it;
+  - `dev/python/check_gate_phantom.py`, now also run on the mesh geometry: the old code has
+    17.9 % of the emissions outside the activity (FAIL), the fix 0 % (PASS), also for a
+    flipped, rotated and shifted pose.
+- Affected: mesh50 clinical and 10× on OSPool and ERIS. Not affected: the small Jaszczak
+  (analytic `GenericSource`) and the voxel geometry (the source follows the ImageVolume).
+- Fix: the source is attached to the body mesh (the image frame) and translated to the image
+  centre. Payload `qmirt-brain-phantom-payload-477dd53bd115` (mesh50_head only) has the fix and
+  the decay origin fix (`df3f39b`).
+- The old mesh50 data stay usable as a mismatched case only: the true activity is the
+  unrotated image (`dev/python/brain_phantom_recon/activity_as_simulated_2mm.npy`).
+
+## Expanse campaign 2026-10-13 (fixed mesh50 clinical)
+
+- Launcher: `submit_slurm/run_brain_phantom_eris.sh --cluster expanse` (Singularity, account
+  mgh102, whole 128-core `compute` nodes, `--slice-timeout` per slice). Run from
+  `~/brain_phantom_launcher` on Expanse with `SIF=~/qmirt-gate-10-sim/submit_slurm/qmirt-gate-10-sim-sif_v1.0.0.sif`
+  (the same image as ERIS and OSPool, sha256 7c1b929e…).
+- Pilot (debug, job 54899130, 128 × 0.01 s): all exit 0; 282 µs per primary with 128
+  single-threaded processes per node (EPYC 7742); about 30 s start-up per slice. Decays match
+  the intended pose (correlation 0.92 vs 0.60 for the old placement).
+- Full: array 54899180, `/expanse/lustre/projects/mgh102/fhan1/brain_phantom/full_mesh50_clinical_fixed_20261013T183201Z`,
+  1280 slices × 0.703125 s (10 nodes × 128), 5 h limit, 4 h slice timeout. Estimate about
+  2.2 h per slice, 3,000–3,800 SU. Not watched by the harvest timer; copy the slices home
+  when done.

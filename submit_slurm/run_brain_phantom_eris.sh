@@ -1,14 +1,22 @@
 #!/bin/bash
-# Submit a brain SPECT phantom acquisition on MGB ERIS (Slurm + Apptainer). Each array task
+# Submit a brain SPECT phantom acquisition on a Slurm cluster: MGB ERIS (Apptainer, default) or
+# SDSC Expanse (--cluster expanse: Singularity, whole 128-core compute nodes). Each array task
 # runs --procs-per-task single-threaded simulations side by side, one time slice each
 # (gate_sim_brain_spect_boolean.py --mode phantom), each reduced to list-mode (the ROOT file
 # is deleted). Single-threaded because the container's opengate 10.1.0 scatter counter
-# (ProcessDefinedStepInVolumeAttribute) refuses multi-threaded runs. Run on an ERIS login node.
+# (ProcessDefinedStepInVolumeAttribute) refuses multi-threaded runs. Run on the cluster's login node.
 #
 #   run_brain_phantom_eris.sh --label NAME --payload qmirt-brain-phantom-payload-<hash>.tar.gz \
 #       --phantom-spec small_jaszczak --activity-bq 5.55e8 [--activity-region all|brain] \
 #       --slice-s 0.9 --slice-count 1000 --procs-per-task 16 --partition PART [--time 12:00:00] \
 #       [--mem-per-proc 3G] [--account hsabet] [--slice-offset 0] [--chunk-s S] [--root DIR] [--dry-run]
+#       [--cluster eris|expanse] [--slice-timeout 4h]
+#
+# --cluster sets the container runtime and the defaults of --account, --root and --mem-per-proc
+# (eris: Apptainer module, hsabet, ~/brain_phantom, 3G; expanse: singularitypro, mgh102,
+# /expanse/lustre/projects/mgh102/$USER/brain_phantom, 1.8G). --slice-timeout stops a slice's
+# simulation after that long (coreutils timeout; exit 124), so one stuck track cannot hold a
+# whole node; resubmit such slices with --slice-offset/--slice-count.
 #
 # A slice runs as equal GATE runs (chunks) of at most 1 s unless --chunk-s is given.
 # The payload tarball is the OSPool one (submit_htcondor/publish_brain_phantom_payload.sh);
@@ -19,11 +27,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SIF="${SIF:-$SCRIPT_DIR/qmirt-gate-10-sim-sif_v1.0.0.sif}"
-APPTAINER_MODULE="${APPTAINER_MODULE:-Apptainer/1.4.2-1.el9}"  # ERIS; the bin dir is added to PATH as well
-APPTAINER_DIR="${APPTAINER_DIR:-/apps/software/Apptainer/1.4.2-1.el9/bin}"
-ROOT="${BRAIN_PHANTOM_ROOT:-$HOME/brain_phantom}"
 LABEL="" PAYLOAD="" SPEC="" ACTIVITY="" REGION="all" SLICE_S="" SLICES="" PROCS=16 PARTITION="" TIME="12:00:00"
-MEM_PER_PROC="3G" ACCOUNT="hsabet" OFFSET=0 CHUNK_S="" DRY=0
+MEM_PER_PROC="" ACCOUNT="" ROOT="" OFFSET=0 CHUNK_S="" DRY=0 CLUSTER="eris" SLICE_TIMEOUT=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -42,11 +47,24 @@ while [[ $# -gt 0 ]]; do
         --slice-offset) OFFSET="$2"; shift 2 ;;
         --chunk-s) CHUNK_S="$2"; shift 2 ;;
         --root) ROOT="$2"; shift 2 ;;
+        --cluster) CLUSTER="$2"; shift 2 ;;
+        --slice-timeout) SLICE_TIMEOUT="$2"; shift 2 ;;
         --dry-run) DRY=1; shift ;;
         -h|--help) sed -n 2,16p "$0"; exit 0 ;;
         *) echo "Unexpected argument: $1" >&2; exit 2 ;;
     esac
 done
+case "$CLUSTER" in
+    eris)  # the Apptainer bin dir is added to PATH as well
+        CONTAINER_SETUP="module load Apptainer/1.4.2-1.el9 >/dev/null 2>&1; export PATH=/apps/software/Apptainer/1.4.2-1.el9/bin:\$PATH"
+        RUNTIME=apptainer; CLUSTER_NAME=ERIS
+        : "${ACCOUNT:=hsabet}" "${ROOT:=${BRAIN_PHANTOM_ROOT:-$HOME/brain_phantom}}" "${MEM_PER_PROC:=3G}" ;;
+    expanse)
+        CONTAINER_SETUP="module load singularitypro/4.1.2 >/dev/null 2>&1"
+        RUNTIME=singularity; CLUSTER_NAME=Expanse
+        : "${ACCOUNT:=mgh102}" "${ROOT:=${BRAIN_PHANTOM_ROOT:-/expanse/lustre/projects/mgh102/$USER/brain_phantom}}" "${MEM_PER_PROC:=1.8G}" ;;
+    *) echo "Unknown --cluster $CLUSTER (eris|expanse)" >&2; exit 2 ;;
+esac
 for v in LABEL PAYLOAD SPEC ACTIVITY SLICE_S SLICES PARTITION; do
     [[ -n "${!v}" ]] || { echo "Missing --$(echo "$v" | tr 'A-Z_' 'a-z-')" >&2; exit 2; }
 done
@@ -75,7 +93,8 @@ TASK_SCRIPT="$CAMPAIGN/task.sh"
     echo "# array task t runs slices t * PROCS + j + OFFSET (j < PROCS), side by side"
     printf 'CAMPAIGN=%q\nSIF=%q\nPROCS=%q\nOFFSET=%q\nSLICES=%q\nSLICE_S=%q\nCHUNK_S=%q\nNUM_CHUNKS=%q\n' \
         "$CAMPAIGN" "$SIF" "$PROCS" "$OFFSET" "$SLICES" "$SLICE_S" "$CHUNK_S" "$NUM_CHUNKS"
-    printf 'SPEC=%q\nACTIVITY=%q\nREGION=%q\n' "$SPEC" "$ACTIVITY" "$REGION"
+    printf 'SPEC=%q\nACTIVITY=%q\nREGION=%q\nRUNTIME=%q\n' "$SPEC" "$ACTIVITY" "$REGION" "$RUNTIME"
+    if [[ -n "$SLICE_TIMEOUT" ]]; then printf 'LIMIT=(timeout -k 60 %q)\n' "$SLICE_TIMEOUT"; else echo 'LIMIT=()'; fi
     cat <<'TASK'
 set -uo pipefail
 run_slice() {
@@ -85,7 +104,7 @@ run_slice() {
     # keep the payload young for the scratch purge (long campaigns)
     find "$CAMPAIGN/payload_root" -type f -exec touch -c {} + 2>/dev/null
     t0=$(python3 -c "print($s * $SLICE_S)")
-    apptainer exec --bind "$CAMPAIGN" --pwd "$CAMPAIGN/payload_root" \
+    "${LIMIT[@]}" "$RUNTIME" exec --bind "$CAMPAIGN" --pwd "$CAMPAIGN/payload_root" \
         --env PYTHONPATH="$CAMPAIGN/payload_root/qmirt/src" \
         --env QMIRT_PHANTOM_DATA="$CAMPAIGN/payload_root/payload/phantom_sources" \
         --env POLARS_MAX_THREADS=1 "$SIF" \
@@ -96,7 +115,7 @@ run_slice() {
             --phantom-spec "payload/phantom_specs/${SPEC}.json" \
             --phantom-activity-bq "$ACTIVITY" --phantom-activity-region "$REGION" --energy-resolution 0 \
         > "$out/job.log" 2>&1 \
-    && apptainer exec --bind "$CAMPAIGN" --pwd "$CAMPAIGN/payload_root" \
+    && "$RUNTIME" exec --bind "$CAMPAIGN" --pwd "$CAMPAIGN/payload_root" \
         --env PYTHONPATH="$CAMPAIGN/payload_root/qmirt/src" \
         --env QMIRT_PHANTOM_DATA="$CAMPAIGN/payload_root/payload/phantom_sources" "$SIF" \
         python3 payload/python/reduce_phantom_singles.py "$out" >> "$out/job.log" 2>&1
@@ -119,20 +138,20 @@ chmod +x "$TASK_SCRIPT"
 
 cat > "$CAMPAIGN/campaign_manifest.json" <<JSON
 {
-  "label": "${LABEL}", "created_utc": "${STAMP}", "cluster": "ERIS",
+  "label": "${LABEL}", "created_utc": "${STAMP}", "cluster": "${CLUSTER_NAME}",
   "git_commit": "$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)",
   "payload": "$(basename "$PAYLOAD")", "container": "${SIF}",
   "phantom_spec": "${SPEC}", "activity_bq": "${ACTIVITY}", "activity_region": "${REGION}",
   "slice_s": "${SLICE_S}", "slice_offset": ${OFFSET}, "chunk_s": "${CHUNK_S}", "chunks_per_slice": ${NUM_CHUNKS},
-  "slice_count": ${SLICES}, "procs_per_task": ${PROCS}, "array_tasks": ${TASKS},
+  "slice_count": ${SLICES}, "procs_per_task": ${PROCS}, "array_tasks": ${TASKS}, "slice_timeout": "${SLICE_TIMEOUT}",
   "acquisition_covered_s": [$(python3 -c "print(${OFFSET} * ${SLICE_S})"), $(python3 -c "print((${OFFSET} + ${SLICES}) * ${SLICE_S})")]
 }
 JSON
 
 SB=(sbatch --parsable --job-name "bp_${LABEL}" --account "$ACCOUNT" --partition "$PARTITION" --array "0-$((TASKS - 1))"
-    --cpus-per-task "$PROCS" --mem "${MEM_MB}M" --time "$TIME"
+    --nodes 1 --ntasks 1 --cpus-per-task "$PROCS" --mem "${MEM_MB}M" --time "$TIME"
     --output "$CAMPAIGN/logs/task_%a.out" --error "$CAMPAIGN/logs/task_%a.err"
-    --wrap "source /etc/profile >/dev/null 2>&1; module load ${APPTAINER_MODULE} >/dev/null 2>&1; export PATH=${APPTAINER_DIR}:\$PATH; bash $TASK_SCRIPT")
+    --wrap "source /etc/profile >/dev/null 2>&1; ${CONTAINER_SETUP}; bash $TASK_SCRIPT")
 echo "Campaign: $CAMPAIGN"
 if [[ "$DRY" -eq 1 ]]; then printf '%q ' "${SB[@]}"; echo; exit 0; fi
 JOB_ID="$("${SB[@]}")"

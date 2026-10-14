@@ -158,11 +158,14 @@ def add_activity_source(sim, spec: pm.Spec, activity_bq: float, *, energy_kev: f
         if info["volume"]:  # follows the image volume
             source.attached_to = info["volume"]
             source.position.translation = [0.0, 0.0, 0.0]
-        else:  # mesh geometry: the image box's own placement
-            x = info["placement"]
-            source.attached_to = x["mother"]
-            source.position.translation = list(x["translation"])
-            source.position.rotation = np.asarray(x["rotation"], float)
+        else:  # mesh geometry: follows the body mesh, whose frame is the image frame
+            # opengate's VoxelSource ignores position.rotation (only position.translation
+            # places the image, in the attached volume's frame), so the rotation must come
+            # from the attached volume. Before 2026-10-13 the source was attached to the
+            # mother with position.rotation, and the activity was placed unrotated.
+            img = pm.image_data(spec)
+            source.attached_to = f"{prefix}_body"
+            source.position.translation = list(img["offset"] + (img["shape"] - 1) / 2 * img["spacing"])
     else:
         parts, _ = pm.build(spec.phantom, spec.options)
         water = next(p for p in parts if p.role == "water")
